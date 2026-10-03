@@ -68,13 +68,9 @@ Plus special basenames such as `Dockerfile` / `Makefile`.
 
 ## Download (macOS Apple Silicon)
 
-Build produces:
+**Release:** [v0.1.0](https://github.com/reallyMu/monolith/releases/tag/v0.1.0) — `Monolith_0.1.0_aarch64.dmg` (≈ **5 MB**)
 
-```text
-src-tauri/target/release/bundle/dmg/Monolith_0.1.0_aarch64.dmg
-```
-
-Typical size ≈ **5 MB**. Ad-hoc signed for personal / local distribution (not Apple-notarized). On first open you may need **System Settings → Privacy & Security → Open Anyway**.
+Ad-hoc signed (not Apple-notarized). On first open you may need **System Settings → Privacy & Security → Open Anyway**.
 
 After install, to re-bind file defaults to Monolith:
 
