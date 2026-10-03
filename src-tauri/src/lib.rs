@@ -376,8 +376,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // RunEvent::Opened is macOS-only (Finder Open With / double-click).
+            #[cfg(target_os = "macos")]
             if let RunEvent::Opened { urls } = event {
                 handle_opened(app, urls);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
             }
         });
 }
