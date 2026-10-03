@@ -1,0 +1,372 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Monolith",
+  "version": "0.1.0",
+  "identifier": "com.muqiang.monolith",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Monolith",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 640,
+        "minHeight": 400
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "macOSPrivateApi": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "md",
+          "markdown",
+          "mdown",
+          "mkd"
+        ],
+        "name": "Markdown Document",
+        "description": "Markdown",
+        "role": "Editor",
+        "rank": "Owner",
+        "mimeType": "text/markdown",
+        "contentTypes": [
+          "net.daringfireball.markdown"
+        ]
+      },
+      {
+        "ext": [
+          "txt",
+          "text",
+          "log"
+        ],
+        "name": "Plain Text",
+        "description": "Plain text",
+        "role": "Editor",
+        "rank": "Default",
+        "mimeType": "text/plain",
+        "contentTypes": [
+          "public.plain-text"
+        ]
+      },
+      {
+        "ext": [
+          "json",
+          "jsonc"
+        ],
+        "name": "JSON Document",
+        "description": "JSON",
+        "role": "Editor",
+        "rank": "Default",
+        "mimeType": "application/json",
+        "contentTypes": [
+          "public.json"
+        ]
+      },
+      {
+        "ext": [
+          "xml"
+        ],
+        "name": "XML Document",
+        "description": "XML",
+        "role": "Editor",
+        "rank": "Default",
+        "mimeType": "application/xml",
+        "contentTypes": [
+          "public.xml"
+        ]
+      },
+      {
+        "ext": [
+          "svg"
+        ],
+        "name": "SVG Document",
+        "description": "SVG",
+        "role": "Editor",
+        "rank": "Default",
+        "mimeType": "image/svg+xml",
+        "contentTypes": [
+          "public.svg-image"
+        ]
+      },
+      {
+        "ext": [
+          "plist"
+        ],
+        "name": "Property List",
+        "description": "Apple property list",
+        "role": "Editor",
+        "rank": "Default",
+        "contentTypes": [
+          "com.apple.property-list"
+        ]
+      },
+      {
+        "ext": [
+          "html",
+          "htm",
+          "xhtml"
+        ],
+        "name": "HTML Document",
+        "description": "HTML",
+        "role": "Editor",
+        "rank": "Default",
+        "mimeType": "text/html",
+        "contentTypes": [
+          "public.html"
+        ]
+      },
+      {
+        "ext": [
+          "css",
+          "scss",
+          "less"
+        ],
+        "name": "Stylesheet",
+        "description": "CSS / SCSS / Less",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "yml",
+          "yaml"
+        ],
+        "name": "YAML Document",
+        "description": "YAML",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "toml",
+          "ini",
+          "env",
+          "conf",
+          "properties"
+        ],
+        "name": "Config File",
+        "description": "INI-like config",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "csv",
+          "tsv"
+        ],
+        "name": "Tabular Text",
+        "description": "CSV / TSV",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "graphql",
+          "gql"
+        ],
+        "name": "GraphQL",
+        "description": "GraphQL",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "proto"
+        ],
+        "name": "Protocol Buffer",
+        "description": "Protobuf text",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "vue"
+        ],
+        "name": "Vue Single File Component",
+        "description": "Vue SFC",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "ts",
+          "tsx"
+        ],
+        "name": "TypeScript Source",
+        "description": "TypeScript",
+        "role": "Editor",
+        "rank": "Owner"
+      },
+      {
+        "ext": [
+          "js",
+          "jsx",
+          "mjs",
+          "cjs"
+        ],
+        "name": "JavaScript Source",
+        "description": "JavaScript",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "py"
+        ],
+        "name": "Python Source",
+        "description": "Python",
+        "role": "Editor",
+        "rank": "Owner"
+      },
+      {
+        "ext": [
+          "rs"
+        ],
+        "name": "Rust Source",
+        "description": "Rust",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "go"
+        ],
+        "name": "Go Source",
+        "description": "Go",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "java",
+          "gradle"
+        ],
+        "name": "Java Source",
+        "description": "Java",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "kt",
+          "kts"
+        ],
+        "name": "Kotlin Source",
+        "description": "Kotlin",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "c",
+          "h"
+        ],
+        "name": "C Source",
+        "description": "C",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "cpp",
+          "cc",
+          "cxx",
+          "hpp"
+        ],
+        "name": "C++ Source",
+        "description": "C++",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "rb"
+        ],
+        "name": "Ruby Source",
+        "description": "Ruby",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "php"
+        ],
+        "name": "PHP Source",
+        "description": "PHP",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "swift"
+        ],
+        "name": "Swift Source",
+        "description": "Swift",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "r"
+        ],
+        "name": "R Source",
+        "description": "R",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "sql"
+        ],
+        "name": "SQL Source",
+        "description": "SQL",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "sh",
+          "bash",
+          "zsh"
+        ],
+        "name": "Shell Script",
+        "description": "Shell",
+        "role": "Editor",
+        "rank": "Default"
+      },
+      {
+        "ext": [
+          "dockerfile"
+        ],
+        "name": "Dockerfile",
+        "description": "Dockerfile",
+        "role": "Editor",
+        "rank": "Default"
+      }
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  }
+}
