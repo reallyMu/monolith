@@ -66,13 +66,18 @@ Plus special basenames such as `Dockerfile` / `Makefile`.
 
 ---
 
-## Download (macOS Apple Silicon)
+## Download
 
-**Release:** [v0.1.0](https://github.com/reallyMu/monolith/releases/tag/v0.1.0) — `Monolith_0.1.0_aarch64.dmg` (≈ **5 MB**)
+**Release:** [v0.1.0](https://github.com/reallyMu/monolith/releases/tag/v0.1.0)
 
-Ad-hoc signed (not Apple-notarized). On first open you may need **System Settings → Privacy & Security → Open Anyway**.
+| Platform | Asset | Notes |
+|---|---|---|
+| **macOS** (Apple Silicon) | `Monolith_0.1.0_aarch64.dmg` (≈ 5 MB) | Ad-hoc signed (not notarized). First open: **Privacy & Security → Open Anyway**. |
+| **Windows** (x64) | `Monolith_0.1.0_x64-setup.exe` (NSIS) | Built by GitHub Actions. Requires [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually preinstalled on Windows 10/11). |
 
-After install, to re-bind file defaults to Monolith:
+Windows installers are produced by [.github/workflows/build-windows.yml](.github/workflows/build-windows.yml) (`workflow_dispatch` or version tags).
+
+### macOS: re-bind file defaults
 
 ```bash
 swift scripts/macos-set-default-handlers.swift src/file-types.json
@@ -130,8 +135,10 @@ Monaco Editor is used under its own license ([MIT](https://github.com/microsoft/
 
 - [ ] Apple Developer ID + notarization for Gatekeeper-clean distribution
 - [ ] Intel (`x86_64`) macOS build
-- [ ] Optional Linux / Windows targets via Tauri
+- [x] Windows x64 NSIS installer (CI)
+- [ ] Optional Linux target via Tauri
 - [ ] User-configurable association list beyond the built-in allow-list
+- [ ] Single-instance / second-file open while already running on Windows
 
 ---
 
