@@ -7,6 +7,7 @@ import MonacoEditor, { type ScrollInfo } from "./components/MonacoEditor.vue";
 import MarkdownWysiwyg from "./components/MarkdownWysiwyg.vue";
 import HtmlPreview from "./components/HtmlPreview.vue";
 import TreePreview from "./components/TreePreview.vue";
+import AssetBrowser from "./components/AssetBrowser.vue";
 import type { EditorTab, ViewMode } from "./types";
 import { useI18n } from "./i18n";
 import type { MessageKey } from "./i18n/messages";
@@ -18,6 +19,12 @@ import {
   takePendingOpens,
   writeTextFile,
 } from "./utils/api";
+import {
+  assetCreateFromPath,
+  assetFindByPath,
+  assetSaveNewVersion,
+  type AssetDto,
+} from "./utils/assetsApi";
 import {
   contrastBorder,
   contrastHighlightBorder,
@@ -99,6 +106,9 @@ const TABLE_PICK_MAX = 8;
 const splitRatio = ref(0.5);
 const dragging = ref(false);
 const statusError = ref("");
+const assetsOpen = ref(true);
+const selectedAssetId = ref<number | null>(null);
+const assetBrowserRef = ref<InstanceType<typeof AssetBrowser> | null>(null);
 const fontSize = ref(Number(localStorage.getItem(FONT_SIZE_KEY)) || 13);
 const editorRef = ref<InstanceType<typeof MonacoEditor> | null>(null);
 const previewEditorRef = ref<InstanceType<typeof MonacoEditor> | null>(null);
@@ -236,6 +246,69 @@ async function saveActive(forceAs = false) {
   } catch (e) {
     statusError.value = String(e);
   }
+}
+
+async function generateAsset() {
+  const tab = active.value;
+  if (!tab?.path) {
+    statusError.value = t("assetNeedPath");
+    return;
+  }
+  try {
+    const created = await assetCreateFromPath(tab.path);
+    selectedAssetId.value = created.id;
+    statusError.value = t("assetCreated");
+    await assetBrowserRef.value?.refresh();
+  } catch (e) {
+    const msg = String(e);
+    const m = /ALREADY_REGISTERED:(\d+)/.exec(msg);
+    if (m) {
+      selectedAssetId.value = Number(m[1]);
+      statusError.value = t("assetAlready");
+      await assetBrowserRef.value?.refresh();
+      return;
+    }
+    statusError.value = msg;
+  }
+}
+
+async function saveNewVersion() {
+  const tab = active.value;
+  if (!tab?.path) {
+    statusError.value = t("assetNeedPath");
+    return;
+  }
+  try {
+    let asset = await assetFindByPath(tab.path);
+    if (!asset) {
+      statusError.value = t("assetNeedRegistered");
+      return;
+    }
+    asset = await assetSaveNewVersion(asset.id, tab.content);
+    if (asset.absolutePath) {
+      tab.path = asset.absolutePath;
+      tab.title = titleFromPath(asset.absolutePath, 0);
+      tab.language = languageFromPath(asset.absolutePath);
+      tab.dirty = false;
+      recent.value = await pushRecent(asset.absolutePath);
+    }
+    selectedAssetId.value = asset.id;
+    statusError.value = "";
+    await assetBrowserRef.value?.refresh();
+  } catch (e) {
+    statusError.value = String(e);
+  }
+}
+
+async function openAssetFromTree(asset: AssetDto) {
+  if (!asset.absolutePath) return;
+  if (!asset.fileExists) {
+    statusError.value = t("assetMissing", { path: asset.absolutePath });
+    selectedAssetId.value = asset.id;
+    return;
+  }
+  selectedAssetId.value = asset.id;
+  await openPath(asset.absolutePath);
 }
 
 async function closeTab(id: string) {
@@ -691,6 +764,20 @@ watch(activeId, async () => {
         <button type="button" :title="`${t('open')} (⌘O)`" @click="openFile">{{ t("open") }}</button>
         <button type="button" :title="`${t('save')} (⌘S)`" @click="saveActive(false)">{{ t("save") }}</button>
         <button type="button" :title="`${t('saveAs')} (⇧⌘S)`" @click="saveActive(true)">{{ t("saveAs") }}</button>
+        <button type="button" :title="t('generateAssetTitle')" @click="generateAsset">
+          {{ t("generateAsset") }}
+        </button>
+        <button type="button" :title="t('saveNewVersionTitle')" @click="saveNewVersion">
+          {{ t("saveNewVersion") }}
+        </button>
+        <button
+          type="button"
+          :class="{ active: assetsOpen }"
+          :title="t('toggleAssets')"
+          @click="assetsOpen = !assetsOpen"
+        >
+          {{ t("toggleAssets") }}
+        </button>
         <div class="recent-wrap">
           <button type="button" :title="t('recent')" @click.stop="recentOpen = !recentOpen">
             {{ t("recent") }} ▾
@@ -901,6 +988,17 @@ watch(activeId, async () => {
       </div>
     </header>
 
+    <div class="workbench">
+      <AssetBrowser
+        v-show="assetsOpen"
+        ref="assetBrowserRef"
+        class="asset-side"
+        :selected-asset-id="selectedAssetId"
+        @open-asset="openAssetFromTree"
+        @select-asset="selectedAssetId = $event"
+        @error="statusError = $event"
+      />
+      <div class="editor-col">
     <div class="tabbar">
       <button
         v-for="tabItem in tabs"
@@ -1015,6 +1113,8 @@ watch(activeId, async () => {
       <span :class="{ dirty: active.dirty }">{{ active.dirty ? t("modified") : t("saved") }}</span>
       <span v-if="statusError" class="sb-err">{{ statusError }}</span>
     </footer>
+      </div>
+    </div>
 
     <!-- Teleport：避免被工具栏 overflow 裁切 -->
     <Teleport to="body">
@@ -1061,6 +1161,25 @@ watch(activeId, async () => {
   flex-direction: column;
   height: 100%;
   background: #12151a;
+}
+
+.workbench {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.asset-side {
+  width: 240px;
+  flex: 0 0 240px;
+}
+
+.editor-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
 .toolbar {

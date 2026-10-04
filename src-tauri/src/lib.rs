@@ -1,3 +1,5 @@
+mod assets;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -349,6 +351,8 @@ pub fn run() {
         .setup(|app| {
             let recent = load_recent(&app.handle()).unwrap_or_default();
             rebuild_menu(&app.handle(), &recent.paths)?;
+            let asset_db = assets::init_asset_db(&app.handle())?;
+            app.manage(asset_db);
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -371,7 +375,19 @@ pub fn run() {
             write_text_file,
             list_recent,
             push_recent,
-            clear_recent
+            clear_recent,
+            assets::asset_list_tree,
+            assets::asset_create_from_path,
+            assets::asset_delete,
+            assets::asset_move,
+            assets::asset_rename,
+            assets::asset_relocate,
+            assets::asset_find_by_path,
+            assets::asset_save_new_version,
+            assets::term_create,
+            assets::term_rename,
+            assets::term_move,
+            assets::term_delete
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

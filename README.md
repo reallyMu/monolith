@@ -48,6 +48,13 @@ Monolith is for people who want to **open, read, and edit text files quickly** �
 - Rejects binary payloads (null bytes) instead of corrupting the buffer
 - Brings the app to the front when a file is opened from Finder
 
+### Local document assets
+- Embedded SQLite ledger (`assets.sqlite`) — logical folders + path index; **files stay where they are**
+- Manual **Generate Asset** → mount under browse-tree Root; drag folders/assets to organize
+- **Save** overwrites; **Save New Version** writes `name_YYYYMMDD_HHMMSS.ext` beside the current file
+- Delete asset removes registration only (never deletes the physical file)
+- Optional `derived_from` provenance for converted sources
+
 ### Local & private
 - No telemetry, no cloud sync, no account
 - All I/O is local filesystem via Tauri commands
@@ -119,7 +126,7 @@ Finder / Open With
        └── TipTap / HTML / tree previews
 ```
 
-Design notes live under `docs/superpowers/specs/`.
+Design notes live under `docs/superpowers/specs/` (document assets: `2026-10-04-local-document-asset-design.md`).
 
 ---
 
