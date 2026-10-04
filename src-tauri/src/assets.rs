@@ -82,7 +82,8 @@ pub fn init_asset_db(app: &AppHandle) -> Result<AssetDb, String> {
           file_type TEXT NOT NULL,
           browse_term_id INTEGER NOT NULL REFERENCES asset_browse_term(id),
           current_version_id INTEGER,
-          created_at TEXT NOT NULL
+          created_at TEXT NOT NULL,
+          source_path TEXT
         );
         CREATE TABLE IF NOT EXISTS asset_version (
           id INTEGER PRIMARY KEY,
@@ -90,16 +91,31 @@ pub fn init_asset_db(app: &AppHandle) -> Result<AssetDb, String> {
           absolute_path TEXT NOT NULL UNIQUE,
           created_at TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS asset_relationship (
-          id INTEGER PRIMARY KEY,
-          from_asset_id INTEGER NOT NULL REFERENCES asset_instance(id) ON DELETE CASCADE,
-          rel_type TEXT NOT NULL DEFAULT 'derived_from',
-          to_external_path TEXT NOT NULL,
-          created_at TEXT NOT NULL
-        );
         "#,
     )
     .map_err(|e| e.to_string())?;
+
+    // Optional conversion provenance on the instance (no relationship table).
+    let has_source: bool = conn
+        .prepare("PRAGMA table_info(asset_instance)")
+        .and_then(|mut s| {
+            let mut rows = s.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "source_path" {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .unwrap_or(false);
+    if !has_source {
+        conn.execute("ALTER TABLE asset_instance ADD COLUMN source_path TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    // Drop legacy relationship table if an earlier build created it.
+    conn.execute("DROP TABLE IF EXISTS asset_relationship", [])
+        .map_err(|e| e.to_string())?;
 
     let ts = now_iso();
     conn.execute(
@@ -226,10 +242,7 @@ fn list_assets(conn: &Connection) -> Result<Vec<AssetDto>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT a.id, a.display_name, a.file_type, a.browse_term_id, a.current_version_id,
-                    a.created_at, v.absolute_path,
-                    (SELECT r.to_external_path FROM asset_relationship r
-                     WHERE r.from_asset_id = a.id AND r.rel_type = 'derived_from'
-                     ORDER BY r.id LIMIT 1)
+                    a.created_at, v.absolute_path, a.source_path
              FROM asset_instance a
              LEFT JOIN asset_version v ON v.id = a.current_version_id
              ORDER BY a.id",
@@ -294,10 +307,14 @@ pub fn asset_create_from_path(
     let name = display_name_of(&abs);
     let ftype = file_type_of(&abs);
 
+    let src = source_path
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     conn.execute(
-        "INSERT INTO asset_instance (display_name, file_type, browse_term_id, current_version_id, created_at)
-         VALUES (?1, ?2, ?3, NULL, ?4)",
-        params![&name, &ftype, root, &ts],
+        "INSERT INTO asset_instance (display_name, file_type, browse_term_id, current_version_id, created_at, source_path)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+        params![&name, &ftype, root, &ts, src],
     )
     .map_err(|e| e.to_string())?;
     let asset_id = conn.last_insert_rowid();
@@ -313,18 +330,6 @@ pub fn asset_create_from_path(
         params![ver_id, asset_id],
     )
     .map_err(|e| e.to_string())?;
-
-    if let Some(src) = source_path {
-        let src = src.trim();
-        if !src.is_empty() {
-            conn.execute(
-                "INSERT INTO asset_relationship (from_asset_id, rel_type, to_external_path, created_at)
-                 VALUES (?1, 'derived_from', ?2, ?3)",
-                params![asset_id, src, &ts],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
 
     list_assets(&conn)?
         .into_iter()

@@ -1,7 +1,7 @@
 # 本机文档资产管理（Monolith）— 设计
 
 > 日期：2026-10-04 · 状态：**已批准 / 开工**  
-> 参考：Healix CDH `asset_browse_term` / `asset_instance` / `asset_version` / `asset_relationship`；资产树交互参考 `AttributeAssetTree`（可拖夹、可拖资产）  
+> 参考：Healix CDH `asset_browse_term` / `asset_instance` / `asset_version`（**不上** `asset_relationship`；溯源用实例上可选 `source_path`）；资产树交互参考 `AttributeAssetTree`（可拖夹、可拖资产）  
 > 栈：Tauri 2 + SQLite（嵌入）+ Vue 3 + Monaco
 
 ---
@@ -19,7 +19,7 @@
 1. 解决本机文档分散、难整理、难查找：逻辑分类 + 路径索引，不强制整理文件系统。
 2. 左树右编：浏览夹 / 资产树（可拖拽夹与资产）+ Monaco 打开当前版本。
 3. 人工「生成资产」入库；人工「保存为新版本」才产生新副本路径。
-4. 可选溯源：`derived_from` → 转换前来源绝对路径。
+4. 可选溯源：`asset_instance.source_path`（转换前来源绝对路径；可空）。**无 relationship 表。**
 5. 文件缺失：提示并保留登记，可重定位或删登记。
 
 ### 1.2 非目标
@@ -41,7 +41,7 @@
 | L4 | **路径唯一**：`asset_version.absolute_path` 全局 UNIQUE；重复生成 → 提示已存在并定位。 |
 | L5 | **Ctrl+S** = 覆盖当前版本文件，不建 `asset_version`。 |
 | L6 | **新版本人工**：同目录 `基名_YYYYMMDD_HHMMSS.ext`（冲突加 `_2`…），新版本行并切当前。 |
-| L7 | **删除资产** = 只删 SQLite 登记（及关系/版本行），**不删**物理文件。 |
+| L7 | **删除资产** = 只删 SQLite 登记（及版本行），**不删**物理文件。 |
 | L8 | **实例扁平，树靠 term**：夹不是资产；UI 参考 CDH AttributeAssetTree 拖拽。 |
 | L9 | **缺失保留**：打不开时提示缺失，登记仍在；可重定位或删登记。 |
 
@@ -77,6 +77,7 @@
 | `browse_term_id` | → term |
 | `current_version_id` | → 当前 `asset_version` |
 | `created_at` | 「生成资产」时间 |
+| `source_path` | 可选；转换前来源绝对路径（溯源） |
 
 ### 3.3 `asset_version`
 
@@ -87,17 +88,7 @@
 | `absolute_path` | **UNIQUE**，含文件名的绝对路径 |
 | `created_at` | 该版本登记时间 |
 
-### 3.4 `asset_relationship`
-
-| 列 | 说明 |
-|----|------|
-| `id` | PK |
-| `from_asset_id` | 文本资产 |
-| `rel_type` | 仅 `derived_from` |
-| `to_external_path` | 来源原文件绝对路径（非资产） |
-| `created_at` | |
-
-- 可空：手工生成资产且无转换来源时不写边。
+**不上 `asset_relationship`。** 溯源只靠 `source_path`。
 
 ---
 
@@ -107,7 +98,7 @@
 
 前置：当前 tab 有路径且 `isSupportedPath`。  
 若 `absolute_path` 已在 `asset_version` → 报错/提示并选中该资产。  
-否则：插 `instance`（browse=root）+ 首条 `version` + 可选 `relationship(source_path)`。
+否则：插 `instance`（browse=root，可选 `source_path`）+ 首条 `version`。
 
 ### 4.2 保存
 
@@ -151,4 +142,4 @@
 3. 删资产不删文件。  
 4. Ctrl+S 覆盖；保存为新版本出时间戳副本并切当前。  
 5. 缺失文件提示 + 可重定位。  
-6. 可选写入 `derived_from`。
+6. 可选写入 `source_path`（无 relationship 表）。

@@ -53,7 +53,7 @@ Monolith is for people who want to **open, read, and edit text files quickly** â
 - Manual **Generate Asset** â†’ mount under browse-tree Root; drag folders/assets to organize
 - **Save** overwrites; **Save New Version** writes `name_YYYYMMDD_HHMMSS.ext` beside the current file
 - Delete asset removes registration only (never deletes the physical file)
-- Optional `derived_from` provenance for converted sources
+- Optional `source_path` on the asset for conversion provenance (no relationship table)
 
 ### Local & private
 - No telemetry, no cloud sync, no account
