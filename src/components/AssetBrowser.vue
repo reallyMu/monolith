@@ -25,6 +25,7 @@ const emit = defineEmits<{
   selectAsset: [assetId: number | null];
   error: [message: string];
   refreshed: [tree: AssetTreeDto];
+  collapse: [];
 }>();
 
 const { t } = useI18n();
@@ -245,6 +246,14 @@ function toggle(termId: number) {
 <template>
   <aside class="asset-browser">
     <div class="ab-head">
+      <button
+        type="button"
+        class="ab-icon ab-collapse"
+        :title="t('collapseAssets')"
+        @click="emit('collapse')"
+      >
+        ‹
+      </button>
       <span class="ab-title">{{ t("assets") }}</span>
       <button type="button" class="ab-icon" :title="t('assetRefresh')" @click="refresh">↻</button>
       <button
@@ -357,9 +366,13 @@ function toggle(termId: number) {
   height: 100%;
   min-width: 0;
   background: #12151a;
-  border-right: 1px solid #2a2f38;
   color: #c8ced8;
   font-size: 12px;
+}
+.ab-collapse {
+  font-size: 16px;
+  font-weight: 600;
+  margin-right: 2px;
 }
 .ab-head {
   display: flex;

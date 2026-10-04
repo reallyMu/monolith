@@ -106,9 +106,71 @@ const TABLE_PICK_MAX = 8;
 const splitRatio = ref(0.5);
 const dragging = ref(false);
 const statusError = ref("");
-const assetsOpen = ref(true);
+const ASSET_WIDTH_KEY = "monolith.assets.width";
+const ASSET_COLLAPSED_KEY = "monolith.assets.collapsed";
+const ASSET_RAIL_PX = 36;
+const ASSET_MIN_PX = 180;
+const ASSET_MAX_PX = 480;
+const ASSET_DEFAULT_PX = 260;
+
+function readAssetWidth(): number {
+  const n = Number(localStorage.getItem(ASSET_WIDTH_KEY));
+  if (Number.isFinite(n) && n >= ASSET_MIN_PX && n <= ASSET_MAX_PX) return n;
+  return ASSET_DEFAULT_PX;
+}
+
+const assetsCollapsed = ref(localStorage.getItem(ASSET_COLLAPSED_KEY) === "1");
+const assetWidth = ref(readAssetWidth());
+const assetWidthBeforeCollapse = ref<number | null>(null);
 const selectedAssetId = ref<number | null>(null);
 const assetBrowserRef = ref<InstanceType<typeof AssetBrowser> | null>(null);
+const resizingAssets = ref(false);
+
+const assetPaneWidth = computed(() =>
+  assetsCollapsed.value ? ASSET_RAIL_PX : assetWidth.value,
+);
+
+function persistAssetLayout() {
+  localStorage.setItem(ASSET_COLLAPSED_KEY, assetsCollapsed.value ? "1" : "0");
+  if (!assetsCollapsed.value) {
+    localStorage.setItem(ASSET_WIDTH_KEY, String(assetWidth.value));
+  }
+}
+
+function toggleAssetsSidebar() {
+  if (assetsCollapsed.value) {
+    assetsCollapsed.value = false;
+    assetWidth.value = Math.max(
+      ASSET_MIN_PX,
+      assetWidthBeforeCollapse.value ?? readAssetWidth(),
+    );
+    assetWidthBeforeCollapse.value = null;
+  } else {
+    assetWidthBeforeCollapse.value = assetWidth.value;
+    assetsCollapsed.value = true;
+  }
+  persistAssetLayout();
+}
+
+function onAssetResizeDown(e: MouseEvent) {
+  if (assetsCollapsed.value) return;
+  e.preventDefault();
+  resizingAssets.value = true;
+  const startX = e.clientX;
+  const startW = assetWidth.value;
+  const onMove = (ev: MouseEvent) => {
+    const next = Math.min(ASSET_MAX_PX, Math.max(ASSET_MIN_PX, startW + (ev.clientX - startX)));
+    assetWidth.value = next;
+  };
+  const onUp = () => {
+    resizingAssets.value = false;
+    persistAssetLayout();
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
 const fontSize = ref(Number(localStorage.getItem(FONT_SIZE_KEY)) || 13);
 const editorRef = ref<InstanceType<typeof MonacoEditor> | null>(null);
 const previewEditorRef = ref<InstanceType<typeof MonacoEditor> | null>(null);
@@ -772,9 +834,9 @@ watch(activeId, async () => {
         </button>
         <button
           type="button"
-          :class="{ active: assetsOpen }"
+          :class="{ active: !assetsCollapsed }"
           :title="t('toggleAssets')"
-          @click="assetsOpen = !assetsOpen"
+          @click="toggleAssetsSidebar"
         >
           {{ t("toggleAssets") }}
         </button>
@@ -988,16 +1050,39 @@ watch(activeId, async () => {
       </div>
     </header>
 
-    <div class="workbench">
-      <AssetBrowser
-        v-show="assetsOpen"
-        ref="assetBrowserRef"
-        class="asset-side"
-        :selected-asset-id="selectedAssetId"
-        @open-asset="openAssetFromTree"
-        @select-asset="selectedAssetId = $event"
-        @error="statusError = $event"
-      />
+    <div class="workbench" :class="{ 'workbench--resizing': resizingAssets }">
+      <div
+        class="asset-pane"
+        :class="{ 'asset-pane--collapsed': assetsCollapsed }"
+        :style="{ width: assetPaneWidth + 'px', flexBasis: assetPaneWidth + 'px' }"
+      >
+        <button
+          v-if="assetsCollapsed"
+          type="button"
+          class="asset-rail"
+          :title="t('expandAssets')"
+          @click="toggleAssetsSidebar"
+        >
+          <span class="asset-rail-label">{{ t("assets") }}</span>
+          <span class="asset-rail-chevron">›</span>
+        </button>
+        <AssetBrowser
+          v-show="!assetsCollapsed"
+          ref="assetBrowserRef"
+          class="asset-side"
+          :selected-asset-id="selectedAssetId"
+          @open-asset="openAssetFromTree"
+          @select-asset="selectedAssetId = $event"
+          @error="statusError = $event"
+          @collapse="toggleAssetsSidebar"
+        />
+        <div
+          v-if="!assetsCollapsed"
+          class="asset-resizer"
+          :title="t('resizeAssets')"
+          @mousedown="onAssetResizeDown"
+        />
+      </div>
       <div class="editor-col">
     <div class="tabbar">
       <button
@@ -1169,9 +1254,83 @@ watch(activeId, async () => {
   min-height: 0;
 }
 
+.workbench--resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.asset-pane {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  transition: width 0.18s ease, flex-basis 0.18s ease;
+  border-right: 1px solid #2a2f38;
+  background: #12151a;
+}
+
+.workbench--resizing .asset-pane {
+  transition: none;
+}
+
+.asset-pane--collapsed {
+  overflow: hidden;
+}
+
 .asset-side {
-  width: 240px;
-  flex: 0 0 240px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.asset-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+}
+
+.asset-resizer:hover,
+.workbench--resizing .asset-resizer {
+  background: rgba(80, 140, 220, 0.35);
+}
+
+.asset-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 0;
+  border: none;
+  background: #161a20;
+  color: #c8ced8;
+  cursor: pointer;
+}
+
+.asset-rail:hover {
+  background: #1c2430;
+  color: #fff;
+}
+
+.asset-rail-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.12em;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.asset-rail-chevron {
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.75;
 }
 
 .editor-col {

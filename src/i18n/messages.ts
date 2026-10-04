@@ -115,6 +115,9 @@ const zh = {
   assetNeedPath: "请先打开并保存到磁盘路径，再生成资产",
   assetNeedRegistered: "当前文件尚未生成资产，无法保存新版本",
   toggleAssets: "资产树",
+  collapseAssets: "向左收起资产树",
+  expandAssets: "向右展开资产树",
+  resizeAssets: "拖动调整资产树宽度",
 } as const;
 
 const en: Record<MessageKey, string> = {
@@ -230,6 +233,9 @@ const en: Record<MessageKey, string> = {
   assetNeedPath: "Save the file to a disk path before generating an asset",
   assetNeedRegistered: "Current file is not an asset; generate an asset first",
   toggleAssets: "Assets",
+  collapseAssets: "Collapse asset tree",
+  expandAssets: "Expand asset tree",
+  resizeAssets: "Drag to resize asset tree",
 };
 
 export const messages: Record<Locale, Record<MessageKey, string>> = { zh, en };
