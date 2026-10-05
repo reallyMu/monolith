@@ -70,7 +70,7 @@ jobs:
           if ($env:GITHUB_REF.StartsWith("refs/tags/")) {
             $tag = $env:GITHUB_REF_NAME
           } else {
-            $tag = "v0.2.0"
+            $tag = "v0.2.1"
           }
           $null = gh release view $tag 2>$null
           if ($LASTEXITCODE -ne 0) {

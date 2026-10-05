@@ -1,6 +1,6 @@
 [package]
 name = "monolith"
-version = "0.2.0"
+version = "0.2.1"
 description = "Monolith — local Monaco text editor"
 authors = ["muqiang"]
 edition = "2021"
