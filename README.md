@@ -48,19 +48,21 @@ Monolith is for people who want to **open, read, and edit text files quickly** �
 - Rejects binary payloads (null bytes) instead of corrupting the buffer
 - Brings the app to the front when a file is opened from Finder
 
-### Local document assets
-- Embedded SQLite ledger (`assets.sqlite`) — logical folders + path index; **files stay where they are**
-- Manual **Generate Asset** → mount under browse-tree Root; drag folders/assets to organize
-- Collapsible asset tree with **name search** (full-text mode stubbed as not implemented)
-- **Save** overwrites; **Save New Version** writes `name_YYYYMMDD_HHMMSS.ext` beside the current file
-- Delete asset removes registration only (never deletes the physical file)
-- Optional `source_path` on the asset for conversion provenance (no relationship table)
+### Local document asset library (v0.2)
+- Build a **local document asset catalog** indexed to real files — **no file moves / copies**
+- Stay in sync with the original path (save writes back; index tracks validity)
+- Global browse tree + **name search** + **version history** (“Save New Version” beside the file)
+- Delete asset = unregister only (never deletes the disk file)
 
-### Web clipper, convert, MCP (v0.2)
-- **Monolith Web Clipper** → Inbox → open / register as asset (install from Settings)
-- Non-text → Markdown conversion (downmark) with conversion log
-- **`monolith-mcp`** stdio tools sharing the same asset Domain; Skill editable in Settings
-- Precision-instrument UI (ice-blue tokens); shortcuts cheat sheet in Settings (⌘E cycles edit / preview / compare)
+### Convert office / PDF → Markdown
+- Turn **Word / Excel / PDF / PPT** into Markdown for reading and asset management (on top of v0.1 text editing)
+
+### Chrome web clipper
+- **Monolith Web Clipper** saves pages as Markdown into Inbox → open / register as assets (install from Settings)
+
+### MCP for AI Agents
+- **`monolith-mcp`** lets Agents list / search / read the same asset library — so Agents can **find and read your local docs accurately**
+- Discover Agents, install MCP, and edit Skill from Settings
 
 ### Local & private
 - No telemetry, no cloud sync, no account
