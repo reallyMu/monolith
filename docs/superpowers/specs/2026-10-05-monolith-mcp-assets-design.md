@@ -197,8 +197,9 @@ MCP 二进制只有一份；**不同 Agent 读不同配置文件**。App「安�
 
 1. 释放/更新 `monolith-mcp` 到固定路径（如  
    `~/Library/Application Support/com.muqiang.monolith/bin/monolith-mcp`）。
-2. **多选**目标主机（checkbox），对勾选者合并写入其 MCP 配置。
-3. 同步安装/更新 **Skill** 到该主机约定目录（见 §6.2）。
+2. **unix**：再建无空格软链 `~/.local/bin/monolith-mcp` → 上述二进制（部分 MCP 宿主对 `Application Support` 路径 discovery 失败）。
+3. **多选**目标主机（checkbox），对勾选者合并写入其 MCP 配置；`command` 优先写软链路径。
+4. 同步安装/更新 **Skill** 到该主机约定目录（见 §6.2）。
 
 ### 6.1 一期建议支持的主机
 
@@ -216,12 +217,14 @@ MCP 二进制只有一份；**不同 Agent 读不同配置文件**。App「安�
 {
   "mcpServers": {
     "monolith": {
-      "command": "/Users/…/Application Support/com.muqiang.monolith/bin/monolith-mcp",
+      "command": "/Users/…/.local/bin/monolith-mcp",
       "args": []
     }
   }
 }
 ```
+
+真实二进制仍在 App Support `bin/`；Agent 配置只引用无空格软链。
 
 ### 6.2 Skill（一期必做）
 

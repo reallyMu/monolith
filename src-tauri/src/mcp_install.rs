@@ -394,6 +394,41 @@ pub fn mcp_skill_reload(
     })
 }
 
+/// MCP host configs must avoid spaces in `command` (e.g. `Application Support`).
+/// Keep the real binary under App Support; expose a no-space symlink for agents.
+#[cfg(unix)]
+fn mcp_command_path(binary: &Path) -> Result<(PathBuf, Vec<String>), String> {
+    let link_dir = home()?.join(".local/bin");
+    fs::create_dir_all(&link_dir).map_err(|e| e.to_string())?;
+    let link = link_dir.join("monolith-mcp");
+    match fs::symlink_metadata(&link) {
+        Ok(meta) if meta.file_type().is_symlink() || meta.is_file() => {
+            let _ = fs::remove_file(&link);
+        }
+        _ => {}
+    }
+    std::os::unix::fs::symlink(binary, &link).map_err(|e| {
+        format!(
+            "symlink {} → {}: {e}",
+            link.display(),
+            binary.display()
+        )
+    })?;
+    Ok((
+        link.clone(),
+        vec![format!(
+            "MCP command (no spaces): {} → {}",
+            link.display(),
+            binary.display()
+        )],
+    ))
+}
+
+#[cfg(not(unix))]
+fn mcp_command_path(binary: &Path) -> Result<(PathBuf, Vec<String>), String> {
+    Ok((binary.to_path_buf(), Vec::new()))
+}
+
 fn merge_mcp_server(config_path: &Path, command: &str) -> Result<(), String> {
     let mut root: Value = if config_path.is_file() {
         let raw = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
@@ -446,8 +481,9 @@ pub fn mcp_install_for_agents(
     }
     let specs = catalog()?;
     let binary = copy_mcp_binary(&app)?;
-    let cmd = binary.to_string_lossy().into_owned();
-    let mut notes = Vec::new();
+    let (cmd_path, mut notes) = mcp_command_path(&binary)?;
+    let cmd = cmd_path.to_string_lossy().into_owned();
+    notes.push(format!("binary → {}", binary.display()));
     let mut skill_dirs: Vec<PathBuf> = Vec::new();
 
     for id in &agents {
@@ -468,7 +504,7 @@ pub fn mcp_install_for_agents(
         }
         let path = spec.mcp_config.as_ref().unwrap();
         merge_mcp_server(path, &cmd)?;
-        notes.push(format!("{} mcp → {}", spec.name, path.display()));
+        notes.push(format!("{} mcp → {} (command={cmd})", spec.name, path.display()));
         skill_dirs.extend(spec.skill_dirs.iter().cloned());
     }
 

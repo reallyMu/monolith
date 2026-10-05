@@ -60,6 +60,11 @@ Agent 可通过 MCP 列出树、按名称搜索、读取正文、登记与修订
 - 转换依赖各平台 downmark 二进制；扫描版 PDF/图片无 OCR
 - macOS 安装包未公证
 
+## MCP 连接说明（Cursor 等）
+
+若 Agent 侧提示 Monolith MCP discovery 失败：多为配置里的 `command` 含空格（`Application Support`）。  
+请用设置 → 安装 MCP（会写入 `~/.local/bin/monolith-mcp` 软链），或手动把 `~/.cursor/mcp.json` 的 command 改为该软链后 **Reload MCP**。
+
 ## 相关设计文档（仓库内）
 
 - `docs/superpowers/specs/2026-10-04-local-document-asset-design.md`

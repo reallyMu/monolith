@@ -63,6 +63,7 @@ Monolith is for people who want to **open, read, and edit text files quickly** â
 ### MCP for AI Agents
 - **`monolith-mcp`** lets Agents list / search / read the same asset library â€” so Agents can **find and read your local docs accurately**
 - Discover Agents, install MCP, and edit Skill from Settings
+- Install writes a no-space symlink `~/.local/bin/monolith-mcp` into Agent configs (avoids MCP discovery failures on `Application Support` paths)
 
 ### Local & private
 - No telemetry, no cloud sync, no account
