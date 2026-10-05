@@ -1,4 +1,9 @@
-/** Shared name-match rules for asset tree UI (align with Domain search_assets_by_name). */
+/**
+ * UI tree name filter — must stay aligned with Domain `asset_matches_name_query`
+ * (display_name + path basename, case-insensitive substring).
+ * Locked by `scripts/test-asset-search.mjs` against the Rust unit cases.
+ * Empty/whitespace query: UI shows full tree; Domain `search_assets_by_name` rejects empty.
+ */
 
 export function basenameOf(path: string): string {
   const parts = path.split(/[/\\]/);

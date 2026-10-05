@@ -19,7 +19,7 @@
 1. 解决本机文档分散、难整理、难查找：逻辑分类 + 路径索引，不强制整理文件系统。
 2. 左树右编：浏览夹 / 资产树（可拖拽夹与资产）+ Monaco 打开当前版本。
 3. 人工「生成资产」入库；人工「保存为新版本」才产生新副本路径。
-4. 可选溯源：`asset_instance.source_path`（转换前来源绝对路径；可空）。**无 relationship 表。**
+4. 可选溯源：`asset_instance.source_path`（转换前来源：本地绝对路径，或网页剪藏的 **http(s) URL**；可空）。**无 relationship 表。**
 5. 文件缺失：提示并保留登记，可重定位或删登记。
 
 ### 1.2 非目标
@@ -35,15 +35,15 @@
 
 | # | 铁律 |
 |---|------|
-| L1 | **不搬文件**：台账只记绝对路径。 |
+| L1 | **不搬/不删物理文件**：台账只记绝对路径；任何资产操作（含删登记、重定位、重建）**不得**删除或移动源文件与资产文件。 |
 | L2 | **准入** = `file-types.json` 中 Monaco 可读扩展名（或特殊基名）；`file_type` 用真实扩展名，不发明 kind 名。 |
 | L3 | **入库人工**：打开文本后点「生成资产」；默认挂 `browse_term` **root**。 |
 | L4 | **路径唯一**：`asset_version.absolute_path` 全局 UNIQUE；重复生成 → 提示已存在并定位。 |
 | L5 | **Ctrl+S** = 覆盖当前版本文件，不建 `asset_version`。 |
 | L6 | **新版本人工**：同目录 `基名_YYYYMMDD_HHMMSS.ext`（冲突加 `_2`…），新版本行并切当前。 |
-| L7 | **删除资产** = 只删 SQLite 登记（及版本行），**不删**物理文件。 |
+| L7 | **删除资产** = 只删资产目录索引（`asset_instance` + CASCADE `asset_version`），**不删**物理文件，**不删** `conversion_log`。 |
 | L8 | **实例扁平，树靠 term**：夹不是资产；UI 参考 CDH AttributeAssetTree 拖拽。 |
-| L9 | **缺失保留**：打不开时提示缺失，登记仍在；可重定位或删登记。 |
+| L9 | **缺失保留**：打不开时提示缺失，登记仍在；可重定位或删登记。启动加载树、回前台、点刷新时扫当前路径；**失效写入 `index_status=INVALID`**，文件恢复后再扫写回 `VALID`。 |
 
 ---
 
@@ -77,7 +77,7 @@
 | `browse_term_id` | → term |
 | `current_version_id` | → 当前 `asset_version` |
 | `created_at` | 「生成资产」时间 |
-| `source_path` | 可选；转换前来源绝对路径（溯源） |
+| `index_status` | `VALID` / `INVALID`；当前版本路径扫盘后落库。失效=登记仍在但当前文件不可用。 |
 
 ### 3.3 `asset_version`
 
@@ -88,7 +88,7 @@
 | `absolute_path` | **UNIQUE**，含文件名的绝对路径 |
 | `created_at` | 该版本登记时间 |
 
-**不上 `asset_relationship`。** 溯源只靠 `source_path`。
+**不上 `asset_relationship`。** 溯源只靠 `source_path`（本地文件路径或网页 URL）。
 
 ---
 
@@ -112,11 +112,14 @@
 - 资产拖到夹 → 更新 `browse_term_id`。  
 - 夹拖到夹 → 更新 `parent_id`（校验非自身/非子孙、深度）。  
 - 删除夹：仅空夹（无子夹、无挂载资产）。  
-- 删除资产：级联删 versions/relationships；**不** `fs::remove_file`。
+- 删除资产：级联删 versions；**不** `fs::remove_file`。
 
 ### 4.4 打开资产
 
-解析 `current_version.absolute_path`；若文件不存在 → 状态栏/对话框提示缺失，保留树节点；提供「重新定位」（选新路径，UNIQUE 校验后更新 version 路径）。
+解析 `current_version.absolute_path`；**启动加载树、窗口回前台、点刷新图标**时扫盘并落库 `index_status`。树上按 `INVALID` 标记；点选仍走弹窗「资产位置索引失效」，保留树节点，可选：
+- **重新定位**：选磁盘上现有文件（**换目录、改文件名、或两者**皆可；UNIQUE 校验后更新当前 version 路径）；`conversion_log` **只追加**一条 `status=relocated`（旧路径→新路径），不改写历史行；
+- **删除资产索引**：级联删登记，不删磁盘源/资产文件，不删 log；
+- **从源重建**（`source_path` 仍存在时）：用 downmark 从源再出 MD（log 再插 success），必要时 relocate（再插 relocated）。
 
 ---
 
@@ -128,10 +131,10 @@
 
 ---
 
-## 6. 与插件转换的边界
+## 6. 与非文本转换的边界
 
-本期：转换可由外部工具完成；产物路径打开后「生成资产」，若知来源则填 `to_external_path`。  
-下期：开放插件协议（stdio/JSON-RPC）注册转换器，主程序仍不解析非文本。
+非文本 → MD：见 [`2026-10-04-nontext-md-conversion-design.md`](./2026-10-04-nontext-md-conversion-design.md)（**downmark** ~8MB + `conversion_log`）。  
+资产仍只收 Monaco 文本；`source_path` 仅登记时写入。
 
 ---
 

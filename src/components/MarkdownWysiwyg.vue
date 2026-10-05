@@ -366,7 +366,7 @@ defineExpose({
   height: 100%;
   overflow: auto;
   padding: 20px 28px;
-  font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.65;
 }

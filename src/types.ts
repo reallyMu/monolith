@@ -1,3 +1,4 @@
+/** split = MD ↔ rendered MD */
 export type ViewMode = "edit" | "preview" | "split";
 
 export interface EditorTab {

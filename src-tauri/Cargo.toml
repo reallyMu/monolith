@@ -1,19 +1,25 @@
 [package]
 name = "monolith"
-version = "0.1.0"
+version = "0.2.0"
 description = "Monolith — local Monaco text editor"
 authors = ["muqiang"]
 edition = "2021"
+default-run = "monolith"
 
 [lib]
 name = "monolith_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Implicit bin `monolith` from src/main.rs (default-run).
+[[bin]]
+name = "monolith-mcp"
+path = "src/bin/monolith_mcp.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

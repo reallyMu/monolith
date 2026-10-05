@@ -96,8 +96,9 @@ function newTab(partial?: Partial<EditorTab>): EditorTab {
   };
 }
 
-const BG_EDIT_KEY = "monolith.bg.edit";
-const BG_PREVIEW_KEY = "monolith.bg.preview";
+/* Bump keys when default chassis colors change so old localStorage doesn't hide the refresh. */
+const BG_EDIT_KEY = "monolith.bg.edit.v2";
+const BG_PREVIEW_KEY = "monolith.bg.preview.v2";
 const FONT_SIZE_KEY = "monolith.fontSize";
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16, 18, 20, 22, 24];
@@ -217,8 +218,9 @@ const treePreviewRef = ref<InstanceType<typeof TreePreview> | null>(null);
 /** Which MD surface receives format toolbar actions. */
 const mdFocus = ref<"source" | "wysiwyg">("source");
 
-const editBg = ref(localStorage.getItem(BG_EDIT_KEY) || "#0e1116");
-const previewBg = ref(localStorage.getItem(BG_PREVIEW_KEY) || "#151a22");
+const editBg = ref(localStorage.getItem(BG_EDIT_KEY) || "#0a0e14");
+const previewBg = ref(localStorage.getItem(BG_PREVIEW_KEY) || "#101820");
+const formatMoreOpen = ref(false);
 
 let scrollLock = false;
 /** Last user-driven side for MD split sync. Programmatic scrolls must not flip this. */
@@ -979,6 +981,20 @@ function setViewMode(mode: ViewMode) {
   if (mode === "edit") mdFocus.value = "source";
 }
 
+const VIEW_MODE_CYCLE: ViewMode[] = ["edit", "preview", "split"];
+/** Dedup menu accelerator + capture keydown so ⌘E cannot skip a mode. */
+let viewCycleGuardUntil = 0;
+
+function cycleViewMode() {
+  const tab = active.value;
+  if (!tab) return;
+  const now = performance.now();
+  if (now < viewCycleGuardUntil) return;
+  viewCycleGuardUntil = now + 120;
+  const i = VIEW_MODE_CYCLE.indexOf(tab.viewMode);
+  setViewMode(VIEW_MODE_CYCLE[(i < 0 ? 0 : i + 1) % VIEW_MODE_CYCLE.length]!);
+}
+
 function runEditorAction(id: string) {
   editorRef.value?.trigger(id);
 }
@@ -1301,76 +1317,81 @@ const shortcutRows = computed(() => [
   { keys: "⌘L", action: t("link"), note: "" },
   { keys: "⇧⌘K", action: t("codeBlock"), note: "" },
   { keys: "⇧⌘T", action: t("table"), note: "" },
-  { keys: "⌘E", action: `${t("edit")} ↔ ${t("preview")}`, note: "" },
+  { keys: "⌘E", action: `${t("edit")} ↔ ${t("preview")} ↔ ${t("split")}`, note: "" },
   { keys: "⌘K", action: t("assetSearchPlaceholder"), note: "" },
   { keys: "⌘U", action: t("shortcutUnsupported"), note: t("shortcutUnsupported") },
 ]);
 
-function isEditableTarget(el: EventTarget | null): boolean {
+/** Skip app shortcuts in dialogs / tree search; still handle them inside Monaco / TipTap. */
+function shouldSkipAppShortcut(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
+  if (el.closest(".monaco-editor, .ProseMirror")) return false;
+  if (el.closest(".ab-input, .ab-search-input, .settings-modal, .register-modal, .inbox-modal")) {
+    return true;
+  }
   const tag = el.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-  if (el.isContentEditable) return true;
-  return false;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
 function onAppKeydown(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
   if (!mod) return;
-  // Let native find/save/new/open through menu where possible; still handle editor formats.
-  const key = e.key.toLowerCase();
+  // Prefer e.code — macOS WebView treats ⌘E as "Use Selection for Find" (feels like ⌘F)
+  // if we don't capture it before the system/WebKit default.
+  const code = e.code;
   const shift = e.shiftKey;
+  const skip = shouldSkipAppShortcut(e.target);
 
-  if (key === "k" && !shift) {
+  // ⌘K — focus asset tree search (not format; ⇧⌘K is code block below)
+  if (code === "KeyK" && !shift) {
+    if (skip) return;
     e.preventDefault();
+    e.stopImmediatePropagation();
     assetBrowserRef.value?.focusSearch?.();
     return;
   }
-  if (key === "e" && !shift) {
-    if (isEditableTarget(e.target) && !(e.target instanceof HTMLElement && e.target.closest(".monaco-editor"))) {
-      // allow typing in plain inputs
-      if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA") {
-        if (!(e.target as HTMLElement).closest(".monaco-editor")) return;
-      }
-    }
-    if (!active.value) return;
+
+  // ⌘E — cycle edit → preview → split (must beat macOS/WebKit "find with selection")
+  if (code === "KeyE" && !shift) {
+    if (skip) return;
     e.preventDefault();
-    setViewMode(active.value.viewMode === "edit" ? "preview" : "edit");
+    e.stopImmediatePropagation();
+    if (!active.value) return;
+    // Close Monaco find widget if it was left open from prior ⌘F
+    editorRef.value?.trigger("closeFindWidget");
+    cycleViewMode();
     return;
   }
 
-  // Format shortcuts: skip asset-tree draft inputs
-  if (isEditableTarget(e.target) && (e.target as HTMLElement).closest(".ab-input, .ab-search-input")) {
-    return;
-  }
+  if (skip) return;
   if (!hasTab.value) return;
 
-  if (key === "b" && !shift) {
+  if (code === "KeyB" && !shift) {
     e.preventDefault();
     mdBold();
     return;
   }
-  if (key === "i" && !shift) {
+  if (code === "KeyI" && !shift) {
     e.preventDefault();
     mdItalic();
     return;
   }
-  if (key === "d" && !shift) {
+  if (code === "KeyD" && !shift) {
     e.preventDefault();
     mdStrike();
     return;
   }
-  if (key === "l" && !shift) {
+  if (code === "KeyL" && !shift) {
     e.preventDefault();
     mdLink();
     return;
   }
-  if (key === "k" && shift) {
+  if (code === "KeyK" && shift) {
     e.preventDefault();
     mdCodeBlock();
     return;
   }
-  if (key === "t" && shift) {
+  if (code === "KeyT" && shift) {
     e.preventDefault();
     toggleTablePicker();
     return;
@@ -1588,6 +1609,12 @@ async function handleMenu(action: string) {
       break;
     case "view-split":
       setViewMode("split");
+      break;
+    case "view-cycle-mode":
+      if (active.value) {
+        editorRef.value?.trigger("closeFindWidget");
+        cycleViewMode();
+      }
       break;
   }
 }
@@ -1900,6 +1927,18 @@ watch(
             <template v-else>
               <section v-show="settingsTab === 'dirs'" class="settings-panel">
                 <p class="settings-lead">{{ t("settingsDirsHint") }}</p>
+                <label class="settings-field">
+                  <span>{{ t("bgEditTitle") }}</span>
+                  <div class="settings-row">
+                    <input type="color" :value="editBg" :disabled="settingsBusy" @input="onEditBg" />
+                  </div>
+                </label>
+                <label class="settings-field">
+                  <span>{{ t("bgPreviewTitle") }}</span>
+                  <div class="settings-row">
+                    <input type="color" :value="previewBg" :disabled="settingsBusy" @input="onPreviewBg" />
+                  </div>
+                </label>
                 <label class="settings-field">
                   <span>{{ t("settingsInboxDir") }}</span>
                   <div class="settings-row">
@@ -2241,16 +2280,6 @@ watch(
             </button>
           </div>
         </div>
-        <div class="tb-group tb-colors">
-          <label class="color-field" :title="t('bgEditTitle')" :aria-label="t('bgEditTitle')">
-            <ToolbarIcon name="bgLeft" :size="14" />
-            <input type="color" :value="editBg" @input="onEditBg" />
-          </label>
-          <label class="color-field" :title="t('bgPreviewTitle')" :aria-label="t('bgPreviewTitle')">
-            <ToolbarIcon name="bgRight" :size="14" />
-            <input type="color" :value="previewBg" @input="onPreviewBg" />
-          </label>
-        </div>
       </div>
 
       <div class="tb-seg tb-seg--settings">
@@ -2268,6 +2297,44 @@ watch(
       </div>
     </header>
 
+    <div class="workbench" :class="{ 'workbench--resizing': resizingAssets }">
+      <div
+        class="asset-pane"
+        :class="{ 'asset-pane--collapsed': assetsCollapsed }"
+        :style="{ width: assetPaneWidth + 'px', flexBasis: assetPaneWidth + 'px' }"
+      >
+        <button
+          v-if="assetsCollapsed"
+          type="button"
+          class="asset-rail"
+          :title="t('expandAssets')"
+          :aria-label="t('expandAssets')"
+          @click="toggleAssetsSidebar"
+        >
+          <span class="asset-rail-label">{{ t("assets") }}</span>
+          <span class="asset-rail-chevron">›</span>
+        </button>
+        <AssetBrowser
+          v-show="!assetsCollapsed"
+          ref="assetBrowserRef"
+          class="asset-side"
+          :selected-asset-id="selectedAssetId"
+          @open-asset="openAssetFromTree"
+          @open-path="openPath"
+          @select-asset="selectedAssetId = $event"
+          @error="statusError = $event"
+          @status="statusError = $event"
+          @request-save-new-version="saveNewVersionForAsset"
+          @collapse="toggleAssetsSidebar"
+        />
+        <div
+          v-if="!assetsCollapsed"
+          class="asset-resizer"
+          :title="t('resizeAssets')"
+          @mousedown="onAssetResizeDown"
+        />
+      </div>
+      <div class="editor-col">
     <!-- Format toolbar -->
     <header class="toolbar toolbar-format" @click.stop>
       <div class="tb-group">
@@ -2370,23 +2437,37 @@ watch(
       </div>
 
       <div class="tb-group md-helpers">
-        <button type="button" class="tb-icon-btn" :title="t('bold')" :aria-label="t('bold')" :disabled="!canEditMd" @click="mdBold">
+        <button type="button" class="tb-icon-btn" :title="`${t('bold')} (⌘B)`" :aria-label="t('bold')" :disabled="!canEditMd" @click="mdBold">
           <ToolbarIcon name="bold" />
         </button>
-        <button type="button" class="tb-icon-btn" :title="t('italic')" :aria-label="t('italic')" :disabled="!canEditMd" @click="mdItalic">
+        <button type="button" class="tb-icon-btn" :title="`${t('italic')} (⌘I)`" :aria-label="t('italic')" :disabled="!canEditMd" @click="mdItalic">
           <ToolbarIcon name="italic" />
         </button>
-        <button type="button" class="tb-icon-btn" :title="t('strike')" :aria-label="t('strike')" :disabled="!canEditMd" @click="mdStrike">
+        <button type="button" class="tb-icon-btn" :title="`${t('link')} (⌘L)`" :aria-label="t('link')" :disabled="!canEditMd" @click="mdLink">
+          <ToolbarIcon name="link" />
+        </button>
+        <button type="button" class="tb-icon-btn" :title="`${t('codeBlock')} (⇧⌘K)`" :aria-label="t('codeBlock')" :disabled="!canEditMd" @click="mdCodeBlock">
+          <ToolbarIcon name="codeBlock" />
+        </button>
+        <button
+          type="button"
+          class="tb-icon-btn"
+          :class="{ active: formatMoreOpen }"
+          :title="t('formatMoreTitle')"
+          :aria-label="t('formatMore')"
+          :disabled="!canEditMd"
+          @click="formatMoreOpen = !formatMoreOpen"
+        >
+          <ToolbarIcon name="chevronDown" />
+        </button>
+      </div>
+
+      <div v-show="formatMoreOpen" class="tb-group md-helpers md-helpers--more">
+        <button type="button" class="tb-icon-btn" :title="`${t('strike')} (⌘D)`" :aria-label="t('strike')" :disabled="!canEditMd" @click="mdStrike">
           <ToolbarIcon name="strike" />
         </button>
         <button type="button" class="tb-icon-btn" :title="t('inlineCode')" :aria-label="t('inlineCode')" :disabled="!canEditMd" @click="mdCode">
           <ToolbarIcon name="code" />
-        </button>
-        <button type="button" class="tb-icon-btn" :title="t('codeBlock')" :aria-label="t('codeBlock')" :disabled="!canEditMd" @click="mdCodeBlock">
-          <ToolbarIcon name="codeBlock" />
-        </button>
-        <button type="button" class="tb-icon-btn" :title="t('link')" :aria-label="t('link')" :disabled="!canEditMd" @click="mdLink">
-          <ToolbarIcon name="link" />
         </button>
         <button type="button" class="tb-icon-btn" :title="t('image')" :aria-label="t('image')" :disabled="!canEditMd" @click="mdImage">
           <ToolbarIcon name="image" />
@@ -2411,7 +2492,7 @@ watch(
             ref="tableBtnRef"
             type="button"
             class="tb-icon-btn tb-icon-btn--menu"
-            :title="t('tableInsertTitle')"
+            :title="`${t('tableInsertTitle')} (⇧⌘T)`"
             :aria-label="t('table')"
             :disabled="!canEditMd"
             @click.stop="toggleTablePicker"
@@ -2420,86 +2501,47 @@ watch(
             <ToolbarIcon name="chevronDown" :size="12" />
           </button>
         </div>
-      </div>
-
-      <div class="tb-group chars-wrap">
-        <button
-          type="button"
-          class="tb-icon-btn tb-icon-btn--menu"
-          :title="t('charsTitle')"
-          :aria-label="t('charsMenu')"
-          :disabled="!canEditMd"
-          @click.stop="charsOpen = !charsOpen"
-        >
-          <ToolbarIcon name="omega" />
-          <ToolbarIcon name="chevronDown" :size="12" />
-        </button>
-        <div v-if="charsOpen" class="chars-menu" @click.stop>
-          <button
-            v-for="c in mdChars"
-            :key="c.label + c.title"
-            type="button"
-            class="char-item"
-            :title="c.title"
-            @click="insertMdChar(c.text)"
-          >
-            {{ c.label }}
-          </button>
+        <div class="chars-wrap">
           <button
             type="button"
-            class="char-item"
-            :title="t('softBreak')"
-            @click="insertMdChar('  \n')"
+            class="tb-icon-btn tb-icon-btn--menu"
+            :title="t('charsTitle')"
+            :aria-label="t('charsMenu')"
+            :disabled="!canEditMd"
+            @click.stop="charsOpen = !charsOpen"
           >
-            ↵
+            <ToolbarIcon name="omega" />
+            <ToolbarIcon name="chevronDown" :size="12" />
           </button>
-          <button type="button" class="char-item" title="NBSP" @click="insertMdChar('\u00A0')">
-            NBSP
-          </button>
-          <button type="button" class="char-item" title="ZWSP" @click="insertMdChar('\u200B')">
-            ZWSP
-          </button>
+          <div v-if="charsOpen" class="chars-menu" @click.stop>
+            <button
+              v-for="c in mdChars"
+              :key="c.label + c.title"
+              type="button"
+              class="char-item"
+              :title="c.title"
+              @click="insertMdChar(c.text)"
+            >
+              {{ c.label }}
+            </button>
+            <button
+              type="button"
+              class="char-item"
+              :title="t('softBreak')"
+              @click="insertMdChar('  \n')"
+            >
+              ↵
+            </button>
+            <button type="button" class="char-item" title="NBSP" @click="insertMdChar('\u00A0')">
+              NBSP
+            </button>
+            <button type="button" class="char-item" title="ZWSP" @click="insertMdChar('\u200B')">
+              ZWSP
+            </button>
+          </div>
         </div>
       </div>
     </header>
-
-    <div class="workbench" :class="{ 'workbench--resizing': resizingAssets }">
-      <div
-        class="asset-pane"
-        :class="{ 'asset-pane--collapsed': assetsCollapsed }"
-        :style="{ width: assetPaneWidth + 'px', flexBasis: assetPaneWidth + 'px' }"
-      >
-        <button
-          v-if="assetsCollapsed"
-          type="button"
-          class="asset-rail"
-          :title="t('expandAssets')"
-          :aria-label="t('expandAssets')"
-          @click="toggleAssetsSidebar"
-        >
-          <ToolbarIcon name="expandRight" />
-        </button>
-        <AssetBrowser
-          v-show="!assetsCollapsed"
-          ref="assetBrowserRef"
-          class="asset-side"
-          :selected-asset-id="selectedAssetId"
-          @open-asset="openAssetFromTree"
-          @open-path="openPath"
-          @select-asset="selectedAssetId = $event"
-          @error="statusError = $event"
-          @status="statusError = $event"
-          @request-save-new-version="saveNewVersionForAsset"
-          @collapse="toggleAssetsSidebar"
-        />
-        <div
-          v-if="!assetsCollapsed"
-          class="asset-resizer"
-          :title="t('resizeAssets')"
-          @mousedown="onAssetResizeDown"
-        />
-      </div>
-      <div class="editor-col">
     <div class="tabbar">
       <button
         v-for="tabItem in tabs"
@@ -2883,7 +2925,7 @@ watch(
   justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
-  border: 1px solid #2a303c;
+  border: 1px solid var(--hairline);
   border-radius: 6px;
   background: var(--bg-0);
   color: inherit;
@@ -3145,7 +3187,7 @@ watch(
   min-width: 0;
   height: 100%;
   transition: width 0.18s ease, flex-basis 0.18s ease;
-  border-right: 1px solid #2a2f38;
+  border-right: 1px solid var(--hairline);
   background: var(--bg-0);
 }
 
@@ -3182,7 +3224,7 @@ watch(
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 10px;
   width: 100%;
   height: 100%;
@@ -3225,11 +3267,11 @@ watch(
   flex-wrap: nowrap;
   gap: 10px;
   align-items: center;
-  padding: 5px 10px;
+  padding: 4px 10px;
   background: var(--bg-1);
-  border-bottom: 1px solid #2a303c;
+  border-bottom: 1px solid var(--hairline);
   -webkit-app-region: drag;
-  min-height: 34px;
+  min-height: var(--toolbar-h);
 }
 
 .toolbar-file {
@@ -3321,7 +3363,8 @@ watch(
 }
 .settings-nav button.active {
   background: var(--accent-muted);
-  color: var(--text-1);
+  color: var(--accent);
+  box-shadow: inset 2px 0 0 0 var(--accent);
 }
 .settings-pane {
   min-width: 0;
@@ -3501,7 +3544,7 @@ watch(
 }
 
 .recent-menu-flyout .recent-item:hover {
-  background: #2a3344;
+  background: var(--bg-2);
   color: #fff;
 }
 
@@ -3529,7 +3572,7 @@ watch(
 }
 
 .recent-menu-flyout .recent-clear:hover {
-  background: #2a3344;
+  background: var(--bg-2);
   color: #fff;
 }
 
@@ -3549,7 +3592,7 @@ watch(
 }
 
 .source-menu-item:hover {
-  background: #2a3344;
+  background: var(--bg-2);
   color: #fff;
 }
 
@@ -3633,7 +3676,7 @@ watch(
   gap: 4px;
   align-items: center;
   padding-right: 10px;
-  border-right: 1px solid #2a303c;
+  border-right: 1px solid var(--hairline);
   flex: none;
 }
 
@@ -3643,7 +3686,7 @@ watch(
 
 .tb-label {
   font-size: var(--text-xs);
-  color: #6e7787;
+  color: var(--text-3);
   margin-right: 2px;
   user-select: none;
 }
@@ -3653,7 +3696,7 @@ watch(
   border: 1px solid var(--hairline);
   background: var(--bg-2);
   color: var(--text-1);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 4px 9px;
   font-size: var(--text-sm);
   cursor: pointer;
@@ -3667,7 +3710,7 @@ watch(
   width: 28px;
   height: 26px;
   padding: 0;
-  color: #c8ceda;
+  color: var(--text-2);
 }
 
 .toolbar .tb-icon-btn--menu {
@@ -3681,8 +3724,9 @@ watch(
 }
 
 .toolbar button:hover:not(:disabled) {
-  background: #2c3342;
-  border-color: #3d4656;
+  background: var(--accent-muted);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .toolbar button:disabled {
@@ -3691,9 +3735,9 @@ watch(
 }
 
 .toolbar button.active {
-  background: #3a4a63;
-  border-color: #5a7294;
-  color: #fff;
+  background: var(--accent-muted);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .color-field {
@@ -3767,8 +3811,8 @@ watch(
   align-items: stretch;
   gap: 2px;
   padding: 0 6px;
-  background: #161a21;
-  border-bottom: 1px solid #2a303c;
+  background: var(--bg-0);
+  border-bottom: 1px solid var(--hairline);
   overflow-x: auto;
   min-height: 34px;
 }
@@ -3779,7 +3823,7 @@ watch(
   gap: 8px;
   border: none;
   background: transparent;
-  color: #9aa3b2;
+  color: var(--text-3);
   padding: 0 10px;
   font-size: var(--text-sm);
   cursor: pointer;
@@ -3788,9 +3832,9 @@ watch(
 }
 
 .tab.active {
-  color: #eef0f4;
-  background: #1a1d23;
-  border-bottom-color: #6b8caf;
+  color: var(--accent);
+  background: var(--accent-muted);
+  border-bottom-color: var(--accent);
 }
 
 .tab-close {
@@ -3857,7 +3901,7 @@ watch(
 .splitter {
   width: 5px;
   cursor: col-resize;
-  background: #2a303c;
+  background: var(--hairline);
   flex: none;
 }
 
@@ -3872,8 +3916,8 @@ watch(
   padding: 4px 12px;
   font-size: var(--text-xs);
   color: #8b93a3;
-  background: #151920;
-  border-top: 1px solid #2a303c;
+  background: var(--bg-0);
+  border-top: 1px solid var(--hairline);
   min-height: 24px;
 }
 

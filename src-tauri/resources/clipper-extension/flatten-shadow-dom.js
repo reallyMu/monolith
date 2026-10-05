@@ -1,0 +1,1 @@
+document.querySelectorAll("*").forEach((function(el){el.shadowRoot&&el.shadowRoot.innerHTML&&el.setAttribute("data-defuddle-shadow",el.shadowRoot.innerHTML)}));

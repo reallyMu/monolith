@@ -521,6 +521,8 @@ fn path_basename(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+/// Keep in sync with UI `matchAssetName` (`src/utils/assetSearch.ts`);
+/// locked by `scripts/test-asset-search.mjs` + this module's unit test.
 fn asset_matches_name_query(asset: &AssetDto, query_lower: &str) -> bool {
     if asset.display_name.to_lowercase().contains(query_lower) {
         return true;

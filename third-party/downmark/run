@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Bundled downmark entry: ./run <input> <output.md>
+set -euo pipefail
+INPUT="${1:-}"
+OUTPUT="${2:-}"
+if [[ -z "$INPUT" || -z "$OUTPUT" ]]; then
+  echo "usage: run <input> <output.md>" >&2
+  exit 2
+fi
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BIN="$HERE/downmark"
+
+if [[ "${MONOLITH_CONVERT_STUB:-}" == "1" ]]; then
+  mkdir -p "$(dirname "$OUTPUT")"
+  {
+    echo "# Converted (downmark stub)"
+    echo
+    echo "Source: \`$INPUT\`"
+  } >"$OUTPUT"
+  exit 0
+fi
+
+if [[ ! -x "$BIN" ]]; then
+  echo "downmark binary missing at $BIN" >&2
+  echo "Run: /Users/muqiang/.openclaw/workspace/monolith/scripts/install-converters.sh" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$OUTPUT")"
+exec "$BIN" -o "$OUTPUT" "$INPUT"

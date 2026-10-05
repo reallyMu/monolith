@@ -51,9 +51,16 @@ Monolith is for people who want to **open, read, and edit text files quickly** �
 ### Local document assets
 - Embedded SQLite ledger (`assets.sqlite`) — logical folders + path index; **files stay where they are**
 - Manual **Generate Asset** → mount under browse-tree Root; drag folders/assets to organize
+- Collapsible asset tree with **name search** (full-text mode stubbed as not implemented)
 - **Save** overwrites; **Save New Version** writes `name_YYYYMMDD_HHMMSS.ext` beside the current file
 - Delete asset removes registration only (never deletes the physical file)
 - Optional `source_path` on the asset for conversion provenance (no relationship table)
+
+### Web clipper, convert, MCP (v0.2)
+- **Monolith Web Clipper** → Inbox → open / register as asset (install from Settings)
+- Non-text → Markdown conversion (downmark) with conversion log
+- **`monolith-mcp`** stdio tools sharing the same asset Domain; Skill editable in Settings
+- Precision-instrument UI (ice-blue tokens); shortcuts cheat sheet in Settings (⌘E cycles edit / preview / compare)
 
 ### Local & private
 - No telemetry, no cloud sync, no account
@@ -75,14 +82,14 @@ Plus special basenames such as `Dockerfile` / `Makefile`.
 
 ## Download
 
-**Release:** [v0.1.0](https://github.com/reallyMu/monolith/releases/tag/v0.1.0)
+**Release:** [v0.2.0](https://github.com/reallyMu/monolith/releases/tag/v0.2.0) — [release notes](docs/RELEASE-NOTES-v0.2.0.md)
 
 | Platform | Asset | Notes |
 |---|---|---|
-| **macOS** (Apple Silicon) | `Monolith_0.1.0_aarch64.dmg` (≈ 5 MB) | Ad-hoc signed (not notarized). First open: **Privacy & Security → Open Anyway**. |
-| **Windows** (x64) | `Monolith_0.1.0_x64-setup.exe` (NSIS) | Built by GitHub Actions. Requires [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually preinstalled on Windows 10/11). |
+| **macOS** (Apple Silicon) | `Monolith_0.2.0_aarch64.dmg` | Ad-hoc signed (not notarized). First open: **Privacy & Security → Open Anyway**. |
+| **Windows** (x64) | `Monolith_0.2.0_x64-setup.exe` (NSIS) | Built by GitHub Actions. Requires [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually preinstalled on Windows 10/11). |
 
-Windows installers are produced by [.github/workflows/build-windows.yml](.github/workflows/build-windows.yml) (`workflow_dispatch` or version tags).
+Windows installers are produced by [.github/workflows/build-windows.yml](.github/workflows/build-windows.yml) (`workflow_dispatch` or `v*` tags).
 
 ### macOS: re-bind file defaults
 

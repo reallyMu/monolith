@@ -16,21 +16,21 @@
   --fw-medium: 500;
   --fw-semibold: 600;
 
-  /* Surfaces */
-  --bg-0: #0e1116;
-  --bg-1: #151a22;
-  --bg-2: #1c2330;
-  --hairline: #2a3344;
+  /* Surfaces — cooler instrument chassis */
+  --bg-0: #0a0e14;
+  --bg-1: #101820;
+  --bg-2: #182230;
+  --hairline: #2c3a4e;
 
   /* Text */
-  --text-1: #e6eef8;
-  --text-2: #aeb8c8;
-  --text-3: #7a8496;
+  --text-1: #eaf2ff;
+  --text-2: #9fb0c6;
+  --text-3: #6d7d93;
 
-  /* Accent — ice blue */
-  --accent: #5eb0ff;
-  --accent-muted: #243a52;
-  --accent-fg: #0a121c;
+  /* Accent — ice blue (must read as brand, not gray) */
+  --accent: #4db3ff;
+  --accent-muted: #14324a;
+  --accent-fg: #041018;
 
   --danger: #e07070;
   --danger-muted: #3a2228;

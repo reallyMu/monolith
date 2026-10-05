@@ -1,13 +1,15 @@
 {
   "name": "monolith",
   "private": false,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "sync:file-associations": "node scripts/sync-file-associations.mjs",
+    "build:clipper": "npm --prefix extensions/monolith-clipper run build:chrome && rm -rf src-tauri/resources/clipper-extension && cp -R extensions/monolith-clipper/dist src-tauri/resources/clipper-extension",
     "dev": "npm run sync:file-associations && vite",
-    "build": "npm run sync:file-associations && vue-tsc --noEmit && vite build",
+    "build": "npm run sync:file-associations && npm run build:clipper && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:asset-search": "node --experimental-strip-types scripts/test-asset-search.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

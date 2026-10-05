@@ -1,0 +1,21 @@
+{
+  "tools": {
+    "downmark": {
+      "extensions": [
+        "pdf",
+        "docx",
+        "pptx",
+        "xlsx",
+        "html",
+        "htm",
+        "csv",
+        "tsv",
+        "epub",
+        "rtf",
+        "odt",
+        "ods",
+        "odp"
+      ]
+    }
+  }
+}

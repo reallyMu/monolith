@@ -28,3 +28,13 @@ src-tauri/gen
 *.njsproj
 *.sln
 *.sw?
+
+# Converter local venvs (install via scripts/install-converters.sh)
+third-party/*/.venv/
+
+# Clipper vendored build (from extensions/monolith-clipper)
+!src-tauri/resources/clipper-extension/
+!src-tauri/resources/clipper-extension/**
+extensions/monolith-clipper/node_modules/
+extensions/monolith-clipper/dist/
+extensions/monolith-clipper/builds/

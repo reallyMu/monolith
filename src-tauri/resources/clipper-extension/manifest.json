@@ -1,0 +1,88 @@
+{
+	"manifest_version": 3,
+	"default_locale": "en",
+	"name": "Monolith Clipper",
+	"homepage_url": "https://github.com/reallyMu/monolith",
+	"version": "0.1.2",
+	"description": "Clip web pages to Markdown in MonolithInbox for the Monolith local document app. Based on Obsidian Web Clipper (MIT).",
+	"permissions": [
+		"activeTab",
+		"clipboardWrite",
+		"commands",
+		"contextMenus",
+		"sidePanel",
+		"storage",
+		"scripting",
+		"declarativeNetRequest",
+		"downloads"
+	],
+	"host_permissions": [
+		"<all_urls>",
+		"http://*/*",
+		"https://*/*"
+	],
+	"action": {
+		"default_popup": "popup.html"
+	},
+	"side_panel": {
+		"default_path": "side-panel.html"
+	},
+	"options_ui": {
+		"page": "settings.html",
+		"open_in_tab": true
+	},
+	"icons": {
+		"16": "icons/icon16.png",
+		"48": "icons/icon48.png",
+		"128": "icons/icon128.png"
+	},
+	"background": {
+		"service_worker": "background.js"
+	},
+	"content_scripts": [
+		{
+			"matches": ["http://*/*", "https://*/*"],
+			"js": ["content-loader.js"]
+		}
+	],
+	"web_accessible_resources": [
+		{
+			"resources": ["reader.css", "reader-script.js", "browser-polyfill.min.js", "style.css", "side-panel.html", "flatten-shadow-dom.js", "highlighter.css"],
+			"extension_ids": ["*"],
+			"matches": [ "*://*/*" ]
+		}
+	],
+	"content_security_policy": {
+		"extension_pages": "script-src 'self'; object-src 'self'"
+	},
+	"commands": {
+		"_execute_action": {
+			"suggested_key": {
+				"default": "Ctrl+Shift+O",
+				"mac": "Command+Shift+O"
+			},
+			"description": "__MSG_commandOpenClipper__"
+		},
+		"quick_clip": {
+			"suggested_key": {
+				"default": "Alt+Shift+O",
+				"mac": "Alt+Shift+O"
+			},
+			"description": "__MSG_commandQuickClip__"
+		},
+		"toggle_highlighter": {
+			"suggested_key": {
+				"default": "Alt+Shift+H",
+				"mac": "Alt+Shift+H"
+			},
+			"description": "__MSG_commandToggleHighlighter__"
+		},
+		"toggle_reader": {
+			"suggested_key": {
+				"default": "Alt+Shift+R",
+				"mac": "Alt+Shift+R"
+			},
+			"description": "__MSG_commandToggleReader__"
+		}
+	}
+}

@@ -1,4 +1,9 @@
 mod assets;
+mod clipper;
+mod convert;
+mod mcp_install;
+pub mod mcp_server;
+mod settings;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -195,6 +200,46 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let save_as_item =
         MenuItem::with_id(app, "file-save-as", "Save As…", true, Some("Shift+CmdOrCtrl+S"))
             .map_err(|e| e.to_string())?;
+    let convert_item = MenuItem::with_id(
+        app,
+        "file-convert-md",
+        "Convert to Markdown…",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let inbox_item = MenuItem::with_id(
+        app,
+        "tools-browse-inbox",
+        "Browse Clip Inbox…",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let asset_register_item = MenuItem::with_id(
+        app,
+        "assets-generate",
+        "Register Asset…",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let asset_version_item = MenuItem::with_id(
+        app,
+        "assets-new-version",
+        "Save as New Version",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let settings_item = MenuItem::with_id(
+        app,
+        "app-settings",
+        "Settings…",
+        true,
+        Some("CmdOrCtrl+,"),
+    )
+    .map_err(|e| e.to_string())?;
     let close_item = MenuItem::with_id(app, "file-close", "Close Tab", true, Some("CmdOrCtrl+W"))
         .map_err(|e| e.to_string())?;
     let clear_recent_item =
@@ -226,8 +271,12 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
 
     let sep1 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let sep2 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
+    let sep3 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
+    let sep4 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
+    let sep5 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let quit = PredefinedMenuItem::quit(app, Some("Quit Monolith")).map_err(|e| e.to_string())?;
 
+    // Groups: file ops + inbox | asset register/version | settings | close/quit
     let file_menu = Submenu::with_id_and_items(
         app,
         "file",
@@ -236,12 +285,20 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
         &[
             &new_item,
             &open_item,
+            &inbox_item,
+            &convert_item,
             &save_item,
             &save_as_item,
             &sep1,
             &recent_menu,
-            &close_item,
             &sep2,
+            &asset_register_item,
+            &asset_version_item,
+            &sep3,
+            &settings_item,
+            &sep4,
+            &close_item,
+            &sep5,
             &quit,
         ],
     )
@@ -285,14 +342,25 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
         MenuItem::with_id(app, "view-preview", "Preview Only", true, None::<&str>)
             .map_err(|e| e.to_string())?;
     let view_split =
-        MenuItem::with_id(app, "view-split", "Split", true, None::<&str>).map_err(|e| e.to_string())?;
+        MenuItem::with_id(app, "view-split", "Compare Render", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    // Claim ⌘E at the menu layer so macOS/WebKit cannot treat it as "Use Selection for Find".
+    let view_toggle = MenuItem::with_id(
+        app,
+        "view-cycle-mode",
+        "Cycle Edit / Preview / Compare",
+        true,
+        Some("CmdOrCtrl+E"),
+    )
+    .map_err(|e| e.to_string())?;
+    let sep_v = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
 
     let view_menu = Submenu::with_id_and_items(
         app,
         "view",
         "View",
         true,
-        &[&view_edit, &view_preview, &view_split],
+        &[&view_edit, &view_preview, &view_split, &sep_v, &view_toggle],
     )
     .map_err(|e| e.to_string())?;
 
@@ -353,6 +421,7 @@ pub fn run() {
             rebuild_menu(&app.handle(), &recent.paths)?;
             let asset_db = assets::init_asset_db(&app.handle())?;
             app.manage(asset_db);
+            app.manage(convert::ConvertRuntime::default());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -383,11 +452,33 @@ pub fn run() {
             assets::asset_rename,
             assets::asset_relocate,
             assets::asset_find_by_path,
+            assets::asset_list_versions,
+            assets::asset_set_current_version,
             assets::asset_save_new_version,
+            assets::reveal_in_os,
+            assets::open_in_os,
             assets::term_create,
             assets::term_rename,
             assets::term_move,
-            assets::term_delete
+            assets::term_delete,
+            convert::convert_tool_for_path,
+            convert::convert_is_supported,
+            convert::convert_default_output,
+            convert::conversion_latest_source,
+            convert::convert_run,
+            convert::convert_cancel,
+            clipper::clipper_inbox_dir,
+            clipper::clipper_list_inbox,
+            clipper::clipper_ensure_extension,
+            clipper::clipper_extension_dir,
+            clipper::clipper_open_install,
+            mcp_install::mcp_discover_agents,
+            mcp_install::mcp_install_for_agents,
+            mcp_install::mcp_skill_get,
+            mcp_install::mcp_skill_save,
+            mcp_install::mcp_skill_reload,
+            settings::settings_get,
+            settings::settings_save
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

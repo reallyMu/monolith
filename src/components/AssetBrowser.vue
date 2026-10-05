@@ -1126,7 +1126,9 @@ function isRenaming(termId: number) {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 8px;
+  min-height: var(--toolbar-h);
+  padding: 0 8px;
+  box-sizing: border-box;
   border-bottom: 1px solid var(--hairline);
 }
 .ab-title {
@@ -1222,11 +1224,13 @@ function isRenaming(termId: number) {
   transition: background 0.08s ease, box-shadow 0.08s ease;
 }
 .ab-row--drop {
-  background: #1e3a5f;
-  box-shadow: inset 3px 0 0 #4a8fd4;
+  background: var(--accent-muted);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 .ab-row--selected {
-  background: #1e3a5f;
+  background: var(--accent-muted);
+  box-shadow: inset 3px 0 0 var(--accent);
+  color: var(--text-1);
 }
 .ab-row--missing {
   background: #2a2218;
@@ -1353,8 +1357,8 @@ function isRenaming(termId: number) {
   min-width: 188px;
   padding: 4px;
   border-radius: 8px;
-  border: 1px solid #323846;
-  background: #1a1e26;
+  border: 1px solid var(--hairline);
+  background: var(--bg-1);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   display: flex;
   flex-direction: column;
@@ -1382,7 +1386,7 @@ function isRenaming(termId: number) {
 .ab-ctx-sep {
   height: 1px;
   margin: 3px 6px;
-  background: #2a303c;
+  background: var(--hairline);
 }
 .ab-ctx-danger {
   color: #e08080 !important;
@@ -1403,9 +1407,9 @@ function isRenaming(termId: number) {
   overflow: auto;
   padding: 14px 16px 12px;
   border-radius: 10px;
-  border: 1px solid #323846;
-  background: #1a1e26;
-  color: #d6d8de;
+  border: 1px solid var(--hairline);
+  background: var(--bg-1);
+  color: var(--text-1);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
   font-family: var(--font-sans);
   font-size: var(--text-sm);
@@ -1457,8 +1461,8 @@ function isRenaming(termId: number) {
   gap: 6px;
   padding: 8px 10px;
   border-radius: 6px;
-  background: #12151a;
-  border: 1px solid #2a303c;
+  background: var(--bg-0);
+  border: 1px solid var(--hairline);
 }
 .ab-ver-meta {
   display: flex;

@@ -24,3 +24,8 @@ export function clearRecent(): Promise<void> {
 export function takePendingOpens(): Promise<string[]> {
   return invoke<string[]>("take_pending_opens");
 }
+
+/** Open path with the OS default application. */
+export function openInOs(path: string): Promise<void> {
+  return invoke<void>("open_in_os", { path });
+}

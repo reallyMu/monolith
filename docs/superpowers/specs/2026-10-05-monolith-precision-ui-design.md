@@ -20,7 +20,7 @@
 | 快捷键 | C — 补齐绑定 + 设置内一览 |
 | ⌘U 下划线 | 一览标注「未支持」（Markdown 无标准下划线，避免污染源码） |
 | ⌘K 显示目录 | 聚焦资产树搜索框 |
-| ⌘E 切换源码模式 | `edit` ↔ `preview` 切换（对照模式不强制退出） |
+| ⌘E 切换视图 | `edit` → `preview` → `split` 循环 |
 
 ## 3. 视觉语言
 
@@ -144,7 +144,7 @@ macOS 以 ⌘ 为准（实现用 `CmdOrCtrl`）；一览文案随系统 locale�
 | ⌘L | 插入链接 | WYSIWYG `setLink` |
 | ⇧⌘K | 代码块 | WYSIWYG `toggleCodeBlock` |
 | ⇧⌘T | 插入表格 | 打开现有表格选择器 |
-| ⌘E | 切换源码模式 | `edit` ↔ `preview` |
+| ⌘E | 切换视图 | `edit` → `preview` → `split` 循环 |
 | ⌘K | 显示目录 | 聚焦资产树搜索 |
 | ⌘U | 下划线 | **未支持**（一览标注）；本轮不加 underline mark |
 
