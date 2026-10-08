@@ -1,6 +1,9 @@
 import browser from './browser-polyfill';
 import { detectBrowser } from './browser-detection';
+import { nextFreeMdName } from './inbox-names';
 import { sanitizeChromeDownloadRelativePath } from './string-utils';
+
+const SOURCE_OUTPUT_STORE = 'monolithSourceToInboxPath';
 
 export interface SaveFileOptions {
 	content: string;
@@ -8,6 +11,9 @@ export interface SaveFileOptions {
 	mimeType?: string;
 	tabId?: number;
 	onError?: (error: Error) => void;
+	/** Page URL or source file path — same key overwrites last inbox file. */
+	sourceKey?: string;
+	conflictAction?: 'uniquify' | 'overwrite';
 }
 
 export function base64EncodeUnicode(str: string): string {
@@ -19,6 +25,46 @@ export function base64EncodeUnicode(str: string): string {
 
 /** Chrome downloads relative to the user's Downloads folder. */
 export const MONOLITH_INBOX_DIR = 'MonolithInbox';
+
+async function loadSourceMap(): Promise<Record<string, string>> {
+	const data = await browser.storage.local.get(SOURCE_OUTPUT_STORE);
+	const raw = (data as Record<string, unknown>)[SOURCE_OUTPUT_STORE];
+	if (!raw || typeof raw !== 'object') return {};
+	return raw as Record<string, string>;
+}
+
+export async function rememberSourceOutput(sourceKey: string, inboxRelative: string): Promise<void> {
+	const key = sourceKey.trim();
+	if (!key || !inboxRelative) return;
+	const map = await loadSourceMap();
+	map[key] = inboxRelative;
+	await browser.storage.local.set({ [SOURCE_OUTPUT_STORE]: map });
+}
+
+export async function resolveInboxFilenameForSource(
+	desiredBasename: string,
+	sourceKey?: string,
+): Promise<{ fileName: string; conflictAction: 'uniquify' | 'overwrite' }> {
+	const base = desiredBasename.replace(/^.*\//, '');
+	const key = sourceKey?.trim() ?? '';
+	if (!key) {
+		return { fileName: `${MONOLITH_INBOX_DIR}/${base}`, conflictAction: 'uniquify' };
+	}
+	const map = await loadSourceMap();
+	const prev = map[key];
+	if (prev) {
+		const rel = prev.startsWith(`${MONOLITH_INBOX_DIR}/`)
+			? prev
+			: `${MONOLITH_INBOX_DIR}/${prev.replace(/^\/+/, '')}`;
+		return { fileName: rel, conflictAction: 'overwrite' };
+	}
+	const occupied = Object.entries(map)
+		.filter(([k]) => k !== key)
+		.map(([, v]) => v);
+	const stem = base.replace(/\.md$/i, '');
+	const name = nextFreeMdName(stem, occupied);
+	return { fileName: `${MONOLITH_INBOX_DIR}/${name}`, conflictAction: 'uniquify' };
+}
 
 function inboxRelativeFromAbs(absPath: string): string | undefined {
 	const abs = absPath.replace(/\\/g, '/');
@@ -60,7 +106,8 @@ export async function waitForDownloadInboxPath(
 export async function downloadViaChromeApi(
 	content: string,
 	fileName: string,
-	mimeType: string
+	mimeType: string,
+	conflictAction: 'uniquify' | 'overwrite' = 'uniquify'
 ): Promise<number> {
 	const canBlob =
 		typeof URL !== 'undefined' &&
@@ -82,7 +129,7 @@ export async function downloadViaChromeApi(
 			url,
 			filename: safeName,
 			saveAs: false,
-			conflictAction: 'uniquify'
+			conflictAction
 		});
 		if (revoke) {
 			const onChanged = (delta: { id: number; state?: { current?: string } }) => {
@@ -119,7 +166,9 @@ export async function saveFile({
 	fileName,
 	mimeType = 'text/markdown',
 	tabId,
-	onError
+	onError,
+	sourceKey,
+	conflictAction = 'uniquify',
 }: SaveFileOptions): Promise<string | undefined> {
 	try {
 		if (mimeType === 'text/markdown' && !fileName.toLowerCase().endsWith('.md')) {
@@ -142,8 +191,12 @@ export async function saveFile({
 		// Do not round-trip content through the SW — old builds awaited "complete"
 		// before sendResponse and MV3 timed out, so clips looked broken.
 		if (!isSafari && typeof browser.downloads?.download === 'function') {
-			const id = await downloadViaChromeApi(content, fileName, mimeType);
-			return (await waitForDownloadInboxPath(id, 8_000)) || fileName;
+			const id = await downloadViaChromeApi(content, fileName, mimeType, conflictAction);
+			const written = (await waitForDownloadInboxPath(id, 8_000)) || fileName;
+			if (sourceKey && mimeType === 'text/markdown') {
+				await rememberSourceOutput(sourceKey, written);
+			}
+			return written;
 		}
 		
 		if (isSafari) {

@@ -38,6 +38,7 @@ export type ToolbarIconName =
   | "minus"
   | "table"
   | "omega"
+  | "sigma"
   | "chevronDown"
   | "refresh"
   | "collapseLeft"
@@ -50,6 +51,7 @@ export type ToolbarIconName =
   | "reconvert"
   | "download"
   | "inbox"
+  | "folderImport"
   | "plug"
   | "settings"
   | "bgLeft"
@@ -227,6 +229,9 @@ const PATHS: Record<ToolbarIconName, Seg[]> = {
     { tag: "line", x1: 9, y1: 3, x2: 9, y2: 21 },
     { tag: "line", x1: 15, y1: 3, x2: 15, y2: 21 },
   ],
+  sigma: [
+    { tag: "path", d: "M4 4h14l-7 8 7 8H4" },
+  ],
   omega: [
     { tag: "path", d: "M4 19a6 6 0 0 1 6-6 6 6 0 0 1 6 6" },
     { tag: "path", d: "M12 5a5 5 0 0 1 5 5v3" },
@@ -277,6 +282,11 @@ const PATHS: Record<ToolbarIconName, Seg[]> = {
   inbox: [
     { tag: "polyline", points: "22 12 16 12 14 15 10 15 8 12 2 12" },
     { tag: "path", d: "M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" },
+  ],
+  folderImport: [
+    { tag: "path", d: "M5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5z" },
+    { tag: "line", x1: 12, y1: 10, x2: 12, y2: 16 },
+    { tag: "polyline", points: "9 13 12 16 15 13" },
   ],
   settings: [
     { tag: "circle", cx: 12, cy: 12, r: 3 },

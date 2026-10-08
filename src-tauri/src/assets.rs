@@ -3,15 +3,26 @@
 use chrono::Local;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager, State};
 
 const DB_NAME: &str = "assets.sqlite";
 const ROOT_CODE: &str = "root";
 const MAX_TERM_DEPTH: usize = 5;
+/// Disambiguates `term-{millis}` when bulk import creates many folders in the same ms.
+static TERM_CODE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn next_term_code() -> String {
+    format!(
+        "term-{}-{}",
+        Local::now().timestamp_millis(),
+        TERM_CODE_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
 /// Same SSOT as frontend `src/file-types.json` (Monaco-readable admission).
 const FILE_TYPES_JSON: &str = include_str!("../../src/file-types.json");
 
@@ -165,6 +176,21 @@ pub fn init_asset_db_at(path: &Path) -> Result<Connection, String> {
     // journal_mode returns a row; execute_batch may still apply. Re-run WAL explicitly.
     let _ = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0));
     let _ = conn.execute_batch("PRAGMA busy_timeout = 5000;");
+    apply_asset_schema(&conn)?;
+    crate::convert::ensure_conversion_log_schema(&conn)?;
+
+    let ts = now_iso();
+    conn.execute(
+        "INSERT OR IGNORE INTO asset_browse_term (id, parent_id, code, display_name, sort_order, status, created_at, updated_at)
+         VALUES (1, NULL, ?1, 'Root', 0, 'ACTIVE', ?2, ?2)",
+        params![ROOT_CODE, ts],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(conn)
+}
+
+pub(crate) fn apply_asset_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS asset_browse_term (
@@ -181,7 +207,6 @@ pub fn init_asset_db_at(path: &Path) -> Result<Connection, String> {
           id INTEGER PRIMARY KEY,
           display_name TEXT NOT NULL,
           file_type TEXT NOT NULL,
-          browse_term_id INTEGER NOT NULL REFERENCES asset_browse_term(id),
           current_version_id INTEGER,
           created_at TEXT NOT NULL,
           source_path TEXT,
@@ -195,62 +220,23 @@ pub fn init_asset_db_at(path: &Path) -> Result<Connection, String> {
           absolute_path TEXT NOT NULL UNIQUE,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS asset_term_mount (
+          asset_id INTEGER NOT NULL REFERENCES asset_instance(id) ON DELETE CASCADE,
+          browse_term_id INTEGER NOT NULL REFERENCES asset_browse_term(id),
+          PRIMARY KEY (asset_id, browse_term_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_term_mount_term
+          ON asset_term_mount(browse_term_id);
         "#,
     )
     .map_err(|e| e.to_string())?;
-
-    // Older DBs created before source_path was in CREATE TABLE.
-    if !column_exists(&conn, "asset_instance", "source_path")? {
-        conn.execute("ALTER TABLE asset_instance ADD COLUMN source_path TEXT", [])
-            .map_err(|e| e.to_string())?;
-    }
-    if !column_exists(&conn, "asset_instance", "source_mtime")? {
-        conn.execute("ALTER TABLE asset_instance ADD COLUMN source_mtime INTEGER", [])
-            .map_err(|e| e.to_string())?;
-    }
-    if !column_exists(&conn, "asset_instance", "source_size")? {
-        conn.execute("ALTER TABLE asset_instance ADD COLUMN source_size INTEGER", [])
-            .map_err(|e| e.to_string())?;
-    }
-    if !column_exists(&conn, "asset_instance", "index_status")? {
-        conn.execute(
-            "ALTER TABLE asset_instance ADD COLUMN index_status TEXT NOT NULL DEFAULT 'VALID'",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    crate::convert::ensure_conversion_log_schema(&conn)?;
-
-    let ts = now_iso();
-    conn.execute(
-        "INSERT OR IGNORE INTO asset_browse_term (id, parent_id, code, display_name, sort_order, status, created_at, updated_at)
-         VALUES (1, NULL, ?1, 'Root', 0, 'ACTIVE', ?2, ?2)",
-        params![ROOT_CODE, ts],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(conn)
+    Ok(())
 }
 
 pub fn init_asset_db(app: &AppHandle) -> Result<AssetDb, String> {
     let path = db_path(app)?;
     let conn = init_asset_db_at(&path)?;
     Ok(AssetDb(Mutex::new(conn)))
-}
-
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|e| e.to_string())?;
-    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let name: String = row.get(1).map_err(|e| e.to_string())?;
-        if name == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 pub fn root_id(conn: &Connection) -> Result<i64, String> {
@@ -262,6 +248,108 @@ pub fn root_id(conn: &Connection) -> Result<i64, String> {
     .map_err(|e| e.to_string())
 }
 
+fn term_is_active(conn: &Connection, term_id: i64) -> Result<bool, String> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM asset_browse_term WHERE id = ?1 AND status = 'ACTIVE'",
+            params![term_id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(false))
+}
+
+/// Insert a mount. Returns true if a new row was added.
+pub fn mount_asset(conn: &Connection, asset_id: i64, term_id: i64) -> Result<bool, String> {
+    if !term_is_active(conn, term_id)? {
+        return Err(format!("NOT_FOUND: browse_term_id={term_id}"));
+    }
+    let n = conn
+        .execute(
+            "INSERT OR IGNORE INTO asset_term_mount (asset_id, browse_term_id) VALUES (?1, ?2)",
+            params![asset_id, term_id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
+/// Remove one mount. If none remain, delete the asset index (not the file).
+pub fn unmount_asset(conn: &Connection, asset_id: i64, term_id: i64) -> Result<(bool, bool), String> {
+    let n = conn
+        .execute(
+            "DELETE FROM asset_term_mount WHERE asset_id = ?1 AND browse_term_id = ?2",
+            params![asset_id, term_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Ok((false, false));
+    }
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM asset_term_mount WHERE asset_id = ?1",
+            params![asset_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if left == 0 {
+        conn.execute("DELETE FROM asset_instance WHERE id = ?1", params![asset_id])
+            .map_err(|e| e.to_string())?;
+        return Ok((true, true));
+    }
+    Ok((true, false))
+}
+
+/// Reuse same-name sibling folder, or create. Errors if parent is at max depth.
+pub fn ensure_child_term(
+    conn: &Connection,
+    parent_id: i64,
+    display_name: &str,
+) -> Result<BrowseTermDto, String> {
+    let name = display_name.trim();
+    if name.is_empty() {
+        return Err("Folder name required".into());
+    }
+    let existing: Option<(i64, Option<i64>, String, String, i64)> = conn
+        .query_row(
+            "SELECT id, parent_id, code, display_name, sort_order FROM asset_browse_term
+             WHERE parent_id = ?1 AND display_name = ?2 AND status = 'ACTIVE'
+             ORDER BY id LIMIT 1",
+            params![parent_id, name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some((id, parent_id, code, display_name, sort_order)) = existing {
+        return Ok(BrowseTermDto {
+            id,
+            parent_id,
+            code,
+            display_name,
+            sort_order,
+        });
+    }
+    let depth = term_depth(conn, parent_id)?;
+    if depth >= MAX_TERM_DEPTH {
+        return Err(format!("Browse tree max depth is {MAX_TERM_DEPTH}"));
+    }
+    let ts = now_iso();
+    let code = next_term_code();
+    conn.execute(
+        "INSERT INTO asset_browse_term (parent_id, code, display_name, sort_order, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, 'ACTIVE', ?4, ?4)",
+        params![parent_id, &code, name, &ts],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(BrowseTermDto {
+        id: conn.last_insert_rowid(),
+        parent_id: Some(parent_id),
+        code,
+        display_name: name.to_string(),
+        sort_order: 0,
+    })
+}
+
 fn normalize_path(path: &str) -> Result<String, String> {
     let p = Path::new(path);
     if !p.is_absolute() {
@@ -271,7 +359,7 @@ fn normalize_path(path: &str) -> Result<String, String> {
 }
 
 /// Admission token: special basename (e.g. dockerfile) or extension. No invented defaults.
-fn file_type_of(path: &str) -> Result<String, String> {
+pub(crate) fn file_type_of(path: &str) -> Result<String, String> {
     let base = Path::new(path)
         .file_name()
         .and_then(|s| s.to_str())
@@ -535,7 +623,35 @@ fn asset_matches_name_query(asset: &AssetDto, query_lower: &str) -> bool {
     false
 }
 
-/// Name search: case-insensitive substring on `display_name` and path basename.
+fn folder_chain_matches(
+    browse_term_id: i64,
+    query_lower: &str,
+    by_id: &HashMap<i64, &BrowseTermDto>,
+    root_id: i64,
+) -> bool {
+    let mut cur = Some(browse_term_id);
+    let mut guard = 0usize;
+    while let Some(id) = cur {
+        if id == root_id {
+            break;
+        }
+        let Some(t) = by_id.get(&id) else {
+            break;
+        };
+        if t.display_name.to_lowercase().contains(query_lower) {
+            return true;
+        }
+        cur = t.parent_id;
+        guard += 1;
+        if guard > MAX_TERM_DEPTH + 2 {
+            break;
+        }
+    }
+    false
+}
+
+/// Name search: case-insensitive substring on remark (`display_name`),
+/// path basename, and mount/ancestor folder names (not Root).
 /// `folder_term_id=None` = global. `recursive` only applies when folder is set.
 pub fn search_assets_by_name(
     conn: &Connection,
@@ -552,9 +668,24 @@ pub fn search_assets_by_name(
         None => list_assets(conn)?,
         Some(id) => list_assets_in_folder(conn, id, recursive)?,
     };
+    let terms = list_terms(conn)?;
+    let root = root_id(conn)?;
+    let by_id: HashMap<i64, &BrowseTermDto> = terms.iter().map(|t| (t.id, t)).collect();
+    let mut seen = HashSet::new();
     Ok(scoped
         .into_iter()
-        .filter(|a| asset_matches_name_query(a, &q_lower))
+        .filter(|a| {
+            if seen.contains(&a.id) {
+                return false;
+            }
+            if !asset_matches_name_query(a, &q_lower)
+                && !folder_chain_matches(a.browse_term_id, &q_lower, &by_id, root)
+            {
+                return false;
+            }
+            seen.insert(a.id);
+            true
+        })
         .collect())
 }
 
@@ -589,12 +720,13 @@ fn persist_current_index_status(conn: &Connection) -> Result<(), String> {
 pub fn list_assets(conn: &Connection) -> Result<Vec<AssetDto>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT a.id, a.display_name, a.file_type, a.browse_term_id, a.current_version_id,
+            "SELECT a.id, a.display_name, a.file_type, m.browse_term_id, a.current_version_id,
                     a.created_at, v.absolute_path, a.source_path, a.source_mtime, a.source_size,
                     a.index_status
              FROM asset_instance a
+             INNER JOIN asset_term_mount m ON m.asset_id = a.id
              LEFT JOIN asset_version v ON v.id = a.current_version_id
-             ORDER BY a.id",
+             ORDER BY a.id, m.browse_term_id",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -684,21 +816,25 @@ pub fn create_from_path_conn(
         .optional()
         .map_err(|e| e.to_string())?
     {
-        return Err(format!("ALREADY_REGISTERED:{existing}"));
+        let term_id = match browse_term_id {
+            Some(id) => {
+                if !term_is_active(conn, id)? {
+                    return Err(format!("NOT_FOUND: browse_term_id={id}"));
+                }
+                id
+            }
+            None => root_id(conn)?,
+        };
+        mount_asset(conn, existing, term_id)?;
+        return list_assets(conn)?
+            .into_iter()
+            .find(|a| a.id == existing && a.browse_term_id == term_id)
+            .ok_or_else(|| "Asset missing after mount".into());
     }
 
     let term_id = match browse_term_id {
         Some(id) => {
-            let ok: bool = conn
-                .query_row(
-                    "SELECT 1 FROM asset_browse_term WHERE id = ?1 AND status = 'ACTIVE'",
-                    params![id],
-                    |_| Ok(true),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?
-                .unwrap_or(false);
-            if !ok {
+            if !term_is_active(conn, id)? {
                 return Err(format!("NOT_FOUND: browse_term_id={id}"));
             }
             id
@@ -728,13 +864,14 @@ pub fn create_from_path_conn(
     };
     conn.execute(
         "INSERT INTO asset_instance
-           (display_name, file_type, browse_term_id, current_version_id, created_at,
+           (display_name, file_type, current_version_id, created_at,
             source_path, source_mtime, source_size)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7)",
-        params![&name, &ftype, term_id, &ts, src, src_mtime, src_size],
+         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6)",
+        params![&name, &ftype, &ts, src, src_mtime, src_size],
     )
     .map_err(|e| e.to_string())?;
     let asset_id = conn.last_insert_rowid();
+    mount_asset(conn, asset_id, term_id)?;
 
     conn.execute(
         "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
@@ -771,7 +908,7 @@ pub fn create_from_path_conn(
 
     list_assets(conn)?
         .into_iter()
-        .find(|a| a.id == asset_id)
+        .find(|a| a.id == asset_id && a.browse_term_id == term_id)
         .ok_or_else(|| "Created asset missing after insert".into())
 }
 
@@ -802,28 +939,38 @@ pub fn asset_delete(db: State<'_, AssetDb>, asset_id: i64) -> Result<(), String>
 #[tauri::command]
 pub fn asset_move(db: State<'_, AssetDb>, asset_id: i64, browse_term_id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let exists: bool = conn
+    let exists: i64 = conn
         .query_row(
-            "SELECT 1 FROM asset_browse_term WHERE id = ?1 AND status = 'ACTIVE'",
-            params![browse_term_id],
-            |_| Ok(true),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .unwrap_or(false);
-    if !exists {
-        return Err("Browse term not found".into());
-    }
-    let n = conn
-        .execute(
-            "UPDATE asset_instance SET browse_term_id = ?1 WHERE id = ?2",
-            params![browse_term_id, asset_id],
+            "SELECT COUNT(*) FROM asset_instance WHERE id = ?1",
+            params![asset_id],
+            |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    if n == 0 {
+    if exists == 0 {
         return Err("Asset not found".into());
     }
+    mount_asset(&conn, asset_id, browse_term_id)?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnmountDto {
+    pub unregistered: bool,
+}
+
+#[tauri::command]
+pub fn asset_unmount(
+    db: State<'_, AssetDb>,
+    asset_id: i64,
+    browse_term_id: i64,
+) -> Result<UnmountDto, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let (removed, unregistered) = unmount_asset(&conn, asset_id, browse_term_id)?;
+    if !removed {
+        return Err("Asset is not in this folder".into());
+    }
+    Ok(UnmountDto { unregistered })
 }
 
 #[tauri::command]
@@ -1172,7 +1319,7 @@ pub fn term_create(
         return Err(format!("Browse tree max depth is {MAX_TERM_DEPTH}"));
     }
     let ts = now_iso();
-    let code = format!("term-{}", Local::now().timestamp_millis());
+    let code = next_term_code();
     conn.execute(
         "INSERT INTO asset_browse_term (parent_id, code, display_name, sort_order, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, 0, 'ACTIVE', ?4, ?4)",
@@ -1273,7 +1420,7 @@ pub fn term_delete(db: State<'_, AssetDb>, term_id: i64) -> Result<(), String> {
     }
     let child_assets: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM asset_instance WHERE browse_term_id = ?1",
+            "SELECT COUNT(*) FROM asset_term_mount WHERE browse_term_id = ?1",
             params![term_id],
             |r| r.get(0),
         )
@@ -1294,43 +1441,11 @@ mod tests {
 
     fn open_mem() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            r#"
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE asset_browse_term (
-              id INTEGER PRIMARY KEY,
-              parent_id INTEGER REFERENCES asset_browse_term(id),
-              code TEXT NOT NULL UNIQUE,
-              display_name TEXT NOT NULL,
-              sort_order INTEGER NOT NULL DEFAULT 0,
-              status TEXT NOT NULL DEFAULT 'ACTIVE',
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
-            );
-            CREATE TABLE asset_instance (
-              id INTEGER PRIMARY KEY,
-              display_name TEXT NOT NULL,
-              file_type TEXT NOT NULL,
-              browse_term_id INTEGER NOT NULL REFERENCES asset_browse_term(id),
-              current_version_id INTEGER,
-              created_at TEXT NOT NULL,
-              source_path TEXT,
-              source_mtime INTEGER,
-              source_size INTEGER,
-              index_status TEXT NOT NULL DEFAULT 'VALID'
-            );
-            CREATE TABLE asset_version (
-              id INTEGER PRIMARY KEY,
-              asset_id INTEGER NOT NULL REFERENCES asset_instance(id) ON DELETE CASCADE,
-              absolute_path TEXT NOT NULL UNIQUE,
-              created_at TEXT NOT NULL
-            );
-            "#,
-        )
-        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_asset_schema(&conn).unwrap();
         let ts = now_iso();
         conn.execute(
-            "INSERT INTO asset_browse_term (id, parent_id, code, display_name, sort_order, status, created_at, updated_at)
+            "INSERT OR IGNORE INTO asset_browse_term (id, parent_id, code, display_name, sort_order, status, created_at, updated_at)
              VALUES (1, NULL, ?1, 'Root', 0, 'ACTIVE', ?2, ?2)",
             params![ROOT_CODE, ts],
         )
@@ -1368,12 +1483,13 @@ mod tests {
         let ts = now_iso();
         let ftype = file_type_of(&abs).unwrap();
         conn.execute(
-            "INSERT INTO asset_instance (display_name, file_type, browse_term_id, current_version_id, created_at, source_path)
-             VALUES ('n', ?1, ?2, NULL, ?3, NULL)",
-            params![ftype, root, ts],
+            "INSERT INTO asset_instance (display_name, file_type, current_version_id, created_at, source_path)
+             VALUES ('n', ?1, NULL, ?2, NULL)",
+            params![ftype, ts],
         )
         .unwrap();
         let asset_id = conn.last_insert_rowid();
+        mount_asset(&conn, asset_id, root).unwrap();
         conn.execute(
             "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
             params![asset_id, &abs, ts],
@@ -1417,12 +1533,13 @@ mod tests {
         fs::write(&orig, b"a").unwrap();
         let ts = now_iso();
         conn.execute(
-            "INSERT INTO asset_instance (display_name, file_type, browse_term_id, created_at)
-             VALUES ('old-name.md', 'md', 1, ?1)",
+            "INSERT INTO asset_instance (display_name, file_type, created_at)
+             VALUES ('old-name.md', 'md', ?1)",
             params![ts],
         )
         .unwrap();
         let asset_id = conn.last_insert_rowid();
+        mount_asset(&conn, asset_id, 1).unwrap();
         conn.execute(
             "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
             params![asset_id, orig.to_str().unwrap(), ts],
@@ -1501,11 +1618,13 @@ mod tests {
         let root = root_id(&conn).unwrap();
         let ts = now_iso();
         conn.execute(
-            "INSERT INTO asset_instance (display_name, file_type, browse_term_id, current_version_id, created_at, source_path)
-             VALUES ('r', 'md', ?1, NULL, ?2, NULL)",
-            params![root, ts],
+            "INSERT INTO asset_instance (display_name, file_type, current_version_id, created_at, source_path)
+             VALUES ('r', 'md', NULL, ?1, NULL)",
+            params![ts],
         )
         .unwrap();
+        let asset_id = conn.last_insert_rowid();
+        mount_asset(&conn, asset_id, root).unwrap();
         let assets = list_assets(&conn).unwrap();
         assert_eq!(assets.len(), 1);
         assert!(assets[0].source_path.is_none());
@@ -1542,6 +1661,23 @@ mod tests {
         assert_eq!(by_base.len(), 1);
         assert_eq!(by_base[0].id, a.id);
         assert!(search_assets_by_name(&conn, "   ", None, false).is_err());
+        let _ = fs::remove_file(&path_er);
+        let _ = fs::remove_file(&path_other);
+    }
+
+    #[test]
+    fn search_assets_by_name_matches_folder() {
+        let conn = open_mem();
+        let root = root_id(&conn).unwrap();
+        let folder = ensure_child_term(&conn, root, "ai-analyzer").unwrap();
+        let path = write_temp("SKILL.md", "x");
+        let abs = path.to_string_lossy().into_owned();
+        let a = create_from_path_conn(&conn, &abs, None, Some("SKILL.md".into()), Some(folder.id))
+            .unwrap();
+        let hits = search_assets_by_name(&conn, "ai-analyzer", None, false).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, a.id);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -1571,12 +1707,13 @@ mod tests {
         let root = root_id(&conn).unwrap();
         let ts = now_iso();
         conn.execute(
-            "INSERT INTO asset_instance (display_name, file_type, browse_term_id, current_version_id, created_at, source_path)
-             VALUES ('x', 'md', ?1, NULL, ?2, NULL)",
-            params![root, ts],
+            "INSERT INTO asset_instance (display_name, file_type, current_version_id, created_at, source_path)
+             VALUES ('x', 'md', NULL, ?1, NULL)",
+            params![ts],
         )
         .unwrap();
         let asset_id = conn.last_insert_rowid();
+        mount_asset(&conn, asset_id, root).unwrap();
         conn.execute(
             "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
             params![asset_id, &abs_a, ts],
@@ -1630,12 +1767,13 @@ mod tests {
         let ts = now_iso();
         conn.execute(
             "INSERT INTO asset_instance
-               (display_name, file_type, browse_term_id, created_at, source_path, source_mtime, source_size)
-             VALUES ('gone.md', 'md', 1, ?1, ?2, ?3, ?4)",
+               (display_name, file_type, created_at, source_path, source_mtime, source_size)
+             VALUES ('gone.md', 'md', ?1, ?2, ?3, ?4)",
             params![ts, &src_abs, id_src.mtime, id_src.size],
         )
         .unwrap();
         let asset_id = conn.last_insert_rowid();
+        mount_asset(&conn, asset_id, 1).unwrap();
         conn.execute(
             "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
             params![asset_id, &abs, ts],
@@ -1698,12 +1836,13 @@ mod tests {
         let ts = now_iso();
         for (name, path) in [("a.md", &a), ("b.md", &b)] {
             conn.execute(
-                "INSERT INTO asset_instance (display_name, file_type, browse_term_id, created_at)
-                 VALUES (?1, 'md', 1, ?2)",
+                "INSERT INTO asset_instance (display_name, file_type, created_at)
+                 VALUES (?1, 'md', ?2)",
                 params![name, ts],
             )
             .unwrap();
             let id = conn.last_insert_rowid();
+            mount_asset(&conn, id, 1).unwrap();
             conn.execute(
                 "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
                 params![id, path.to_str().unwrap(), ts],
@@ -1738,12 +1877,13 @@ mod tests {
         let ts = now_iso();
         conn.execute(
             "INSERT INTO asset_instance
-               (display_name, file_type, browse_term_id, created_at, source_path, source_mtime, source_size)
-             VALUES ('doc.md', 'md', 1, ?1, ?2, 1, 7)",
+               (display_name, file_type, created_at, source_path, source_mtime, source_size)
+             VALUES ('doc.md', 'md', ?1, ?2, 1, 7)",
             params![ts, src.to_str().unwrap()],
         )
         .unwrap();
         let asset_id = conn.last_insert_rowid();
+        mount_asset(&conn, asset_id, 1).unwrap();
         conn.execute(
             "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
             params![asset_id, asset_path.to_str().unwrap(), ts],
@@ -1827,12 +1967,13 @@ mod tests {
         fs::write(&old, b"v").unwrap();
         let ts = now_iso();
         conn.execute(
-            "INSERT INTO asset_instance (display_name, file_type, browse_term_id, created_at)
-             VALUES ('old.md', 'md', 1, ?1)",
+            "INSERT INTO asset_instance (display_name, file_type, created_at)
+             VALUES ('old.md', 'md', ?1)",
             params![ts],
         )
         .unwrap();
         let asset_id = conn.last_insert_rowid();
+        mount_asset(&conn, asset_id, 1).unwrap();
         conn.execute(
             "INSERT INTO asset_version (asset_id, absolute_path, created_at) VALUES (?1, ?2, ?3)",
             params![asset_id, old.to_str().unwrap(), ts],
@@ -1880,5 +2021,45 @@ mod tests {
             .unwrap();
         assert_eq!(hist.path, "/src.xlsx");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn second_mount_and_last_unmount_unregisters() {
+        let path = write_temp("shared.md", "x");
+        let abs = path.to_string_lossy().into_owned();
+        let conn = open_mem();
+        let root = root_id(&conn).unwrap();
+        let created = create_from_path_conn(&conn, &abs, None, None, Some(root)).unwrap();
+        let other = ensure_child_term(&conn, root, "docs").unwrap();
+        assert!(mount_asset(&conn, created.id, other.id).unwrap());
+        let rows = list_assets(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        let (removed, gone) = unmount_asset(&conn, created.id, other.id).unwrap();
+        assert!(removed && !gone);
+        let (removed2, gone2) = unmount_asset(&conn, created.id, root).unwrap();
+        assert!(removed2 && gone2);
+        assert!(list_assets(&conn).unwrap().is_empty());
+        assert!(path.is_file());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(path.parent().unwrap());
+    }
+
+    #[test]
+    fn ensure_child_term_reuses_name() {
+        let conn = open_mem();
+        let a = ensure_child_term(&conn, 1, "docs").unwrap();
+        let b = ensure_child_term(&conn, 1, "docs").unwrap();
+        assert_eq!(a.id, b.id);
+    }
+
+    #[test]
+    fn ensure_child_term_bulk_same_ms_no_unique_clash() {
+        let conn = open_mem();
+        let mut ids = HashSet::new();
+        for i in 0..200 {
+            let t = ensure_child_term(&conn, 1, &format!("skill-{i}")).unwrap();
+            assert!(ids.insert(t.id), "duplicate term id {}", t.id);
+        }
+        assert_eq!(ids.len(), 200);
     }
 }

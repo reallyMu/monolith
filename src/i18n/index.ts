@@ -3,6 +3,7 @@ import { messages, type Locale, type MessageKey } from "./messages";
 
 export type { Locale, MessageKey };
 
+/** Same rule as Rust `i18n::detect_locale`: zh* → zh, else en (until more packs). */
 export function detectLocale(): Locale {
   const lang =
     (typeof navigator !== "undefined" && (navigator.language || navigator.languages?.[0])) || "en";

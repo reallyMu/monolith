@@ -85,12 +85,12 @@ Plus special basenames such as `Dockerfile` / `Makefile`.
 
 ## Download
 
-**Release:** [v0.2.1](https://github.com/reallyMu/monolith/releases/tag/v0.2.1) — [release notes](docs/RELEASE-NOTES-v0.2.1.md)
+**Release:** [v0.2.2](https://github.com/reallyMu/monolith/releases/tag/v0.2.2) — [release notes](docs/RELEASE-NOTES-v0.2.2.md)
 
 | Platform | Asset | Notes |
 |---|---|---|
-| **macOS** (Apple Silicon) | `Monolith_0.2.1_aarch64.dmg` | Ad-hoc signed (not notarized). First open: **Privacy & Security → Open Anyway**. |
-| **Windows** (x64) | `Monolith_0.2.1_x64-setup.exe` (NSIS) | Built by GitHub Actions. Requires [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually preinstalled on Windows 10/11). |
+| **macOS** (Apple Silicon) | `Monolith_0.2.2_aarch64.dmg` | Ad-hoc signed (not notarized). First open: **Privacy & Security → Open Anyway**. |
+| **Windows** (x64) | `Monolith_0.2.2_x64-setup.exe` (NSIS) | Built by GitHub Actions. Requires [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually preinstalled on Windows 10/11). |
 
 Windows installers are produced by [.github/workflows/build-windows.yml](.github/workflows/build-windows.yml) (`workflow_dispatch` or `v*` tags).
 

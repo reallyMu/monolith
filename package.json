@@ -1,7 +1,7 @@
 {
   "name": "monolith",
   "private": false,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "scripts": {
     "sync:file-associations": "node scripts/sync-file-associations.mjs",
@@ -10,6 +10,8 @@
     "build": "npm run sync:file-associations && npm run build:clipper && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:asset-search": "node --experimental-strip-types scripts/test-asset-search.mjs",
+    "test:md-math-mermaid": "node --experimental-strip-types scripts/test-md-math-mermaid.mjs",
+    "test:md-math-range": "node --experimental-strip-types scripts/test-md-math-range.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -26,7 +28,9 @@
     "@tiptap/extension-task-list": "^3.31.4",
     "@tiptap/starter-kit": "^3.31.4",
     "@tiptap/vue-3": "^3.31.4",
+    "katex": "^0.19.0",
     "markdown-it": "^14.1.0",
+    "mermaid": "^12.1.0",
     "monaco-editor": "^0.52.2",
     "sql-formatter": "^15.9.0",
     "tiptap-markdown": "^0.9.0",

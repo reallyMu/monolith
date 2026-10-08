@@ -9,7 +9,16 @@ import HtmlPreview from "./components/HtmlPreview.vue";
 import TreePreview from "./components/TreePreview.vue";
 import AssetBrowser from "./components/AssetBrowser.vue";
 import ConvertModal from "./components/ConvertModal.vue";
+import FormulaEditorModal from "./components/FormulaEditorModal.vue";
 import ToolbarIcon from "./components/ToolbarIcon.vue";
+import {
+  findMathAtOffset,
+  findMathByLatex,
+  replaceMathRange,
+  wrapMath,
+  type MathMode,
+  type MathRange,
+} from "./utils/mdMathRange";
 import type { EditorTab, ViewMode } from "./types";
 import { useI18n } from "./i18n";
 import type { MessageKey } from "./i18n/messages";
@@ -20,12 +29,14 @@ import {
   readTextFile,
   openInOs,
   takePendingOpens,
+  pathIsDir,
   writeTextFile,
 } from "./utils/api";
 import {
   assetCreateFromPath,
   assetDelete,
   assetFindByPath,
+  folderImport,
   assetRelocate,
   assetSaveNewVersion,
   fileNameFromPath,
@@ -136,6 +147,13 @@ const recentOpen = ref(false);
 const recentBtnRef = ref<HTMLButtonElement | null>(null);
 const recentMenuStyle = ref<Record<string, string>>({});
 const charsOpen = ref(false);
+const charsBtnRef = ref<HTMLButtonElement | null>(null);
+const charsMenuStyle = ref<Record<string, string>>({});
+const formulaOpen = ref(false);
+const formulaLatex = ref("");
+const formulaMode = ref<MathMode>("block");
+const formulaEditing = ref(false);
+const formulaRange = ref<MathRange | null>(null);
 const tableOpen = ref(false);
 const tableHover = ref({ rows: 0, cols: 0 });
 const tableBtnRef = ref<HTMLButtonElement | null>(null);
@@ -220,7 +238,6 @@ const mdFocus = ref<"source" | "wysiwyg">("source");
 
 const editBg = ref(localStorage.getItem(BG_EDIT_KEY) || "#0a0e14");
 const previewBg = ref(localStorage.getItem(BG_PREVIEW_KEY) || "#101820");
-const formatMoreOpen = ref(false);
 
 let scrollLock = false;
 /** Last user-driven side for MD split sync. Programmatic scrolls must not flip this. */
@@ -597,6 +614,35 @@ async function generateAsset() {
   registerInputRef.value?.select();
 }
 
+async function importFolder(dir?: string) {
+  const selected =
+    dir ??
+    (await open({
+      title: t("folderImportTitle"),
+      directory: true,
+      multiple: false,
+    }));
+  if (typeof selected !== "string" || !selected) return;
+  const includeSubdirs = await ask(t("folderImportSubdirs"), {
+    title: t("folderImport"),
+    kind: "info",
+    okLabel: t("folderImportYesSubdirs"),
+    cancelLabel: t("folderImportNoSubdirs"),
+  });
+  try {
+    const r = await folderImport(selected, includeSubdirs);
+    statusError.value = t("folderImportDone", {
+      created: String(r.created),
+      mounted: String(r.mounted),
+      skipped: String(r.skippedUnsupported + r.depthSkipped),
+      failed: String(r.convertFailed),
+    });
+    await assetBrowserRef.value?.refresh();
+  } catch (e) {
+    statusError.value = String(e);
+  }
+}
+
 const convertOpen = ref(false);
 const convertTool = ref("");
 const convertInputName = ref("");
@@ -724,16 +770,7 @@ async function confirmRegister() {
     registerOpen.value = false;
     await assetBrowserRef.value?.refresh();
   } catch (e) {
-    const msg = String(e);
-    const m = /ALREADY_REGISTERED:(\d+)/.exec(msg);
-    if (m) {
-      selectedAssetId.value = Number(m[1]);
-      statusError.value = t("assetAlready");
-      registerOpen.value = false;
-      await assetBrowserRef.value?.refresh();
-      return;
-    }
-    statusError.value = msg;
+    statusError.value = String(e);
   } finally {
     registerBusy.value = false;
   }
@@ -1091,6 +1128,119 @@ function toggleTablePicker() {
   }
 }
 
+function placeCharsMenu() {
+  const btn = charsBtnRef.value;
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  const pad = 8;
+  const width = 280;
+  let left = rect.right - width;
+  if (left < pad) left = pad;
+  if (left + width > window.innerWidth - pad) left = window.innerWidth - width - pad;
+  charsMenuStyle.value = {
+    position: "fixed",
+    top: `${Math.round(rect.bottom + 4)}px`,
+    left: `${Math.round(left)}px`,
+    width: `${width}px`,
+    zIndex: "9999",
+  };
+}
+
+function toggleCharsMenu() {
+  tableOpen.value = false;
+  recentOpen.value = false;
+  formulaOpen.value = false;
+  charsOpen.value = !charsOpen.value;
+  if (charsOpen.value) {
+    void nextTick(() => placeCharsMenu());
+  }
+}
+
+function openFormulaEditor(opts?: {
+  latex?: string;
+  mode?: MathMode;
+  range?: MathRange | null;
+}) {
+  const tab = active.value;
+  if (!tab || !isMd.value) return;
+  charsOpen.value = false;
+  tableOpen.value = false;
+  recentOpen.value = false;
+
+  let range = opts?.range ?? null;
+  let latex = opts?.latex ?? "";
+  let mode: MathMode = opts?.mode ?? "block";
+
+  if (!range && !opts?.latex) {
+    const content = tab.content ?? "";
+    const offset = editorRef.value?.getCursorOffset?.() ?? -1;
+    if (offset >= 0) {
+      range = findMathAtOffset(content, offset);
+      if (range) {
+        latex = range.latex;
+        mode = range.mode;
+      } else {
+        const sel = editorRef.value?.getSelectedText?.() ?? "";
+        if (sel.trim()) latex = sel.trim();
+      }
+    }
+  }
+
+  formulaRange.value = range;
+  formulaLatex.value = latex;
+  formulaMode.value = mode;
+  formulaEditing.value = !!range;
+  formulaOpen.value = true;
+}
+
+function closeFormulaEditor() {
+  formulaOpen.value = false;
+  formulaRange.value = null;
+  formulaEditing.value = false;
+}
+
+function onFormulaConfirm(payload: { latex: string; mode: MathMode }) {
+  const tab = active.value;
+  if (!tab) return;
+  const wrapped = wrapMath(payload.latex, payload.mode);
+  const range = formulaRange.value;
+
+  if (range) {
+    if (editorRef.value && showEdit.value) {
+      editorRef.value.replaceOffsetRange(range.start, range.end, wrapped);
+    } else {
+      onContent(replaceMathRange(tab.content, range, payload.latex, payload.mode));
+    }
+  } else if (editorRef.value && showEdit.value) {
+    const insert =
+      payload.mode === "block"
+        ? (tab.content.endsWith("\n") || tab.content.length === 0 ? "" : "\n") + wrapped + "\n"
+        : wrapped;
+    // When selection is empty, insertText replaces empty sel (= insert at cursor).
+    editorRef.value.insertText(insert);
+  } else {
+    const base = tab.content ?? "";
+    const sep = base.length === 0 || base.endsWith("\n") ? "" : "\n";
+    onContent(base + sep + wrapped + (payload.mode === "block" ? "\n" : ""));
+  }
+  closeFormulaEditor();
+}
+
+function onEditMathFromPreview(payload: {
+  latex: string;
+  mode: MathMode;
+  preferStart?: number;
+}) {
+  const tab = active.value;
+  if (!tab) return;
+  const range = findMathByLatex(tab.content, payload.latex, payload.mode, payload.preferStart);
+  openFormulaEditor({
+    latex: payload.latex,
+    mode: payload.mode,
+    range,
+  });
+}
+
 function insertMdTable(rows: number, cols: number) {
   if (useWysiwygToolbar.value) mdWysiwygRef.value?.insertTable(rows, cols);
   else editorRef.value?.insertText(buildMdTable(rows, cols));
@@ -1274,6 +1424,69 @@ async function installWebClipper() {
 const inboxOpen = ref(false);
 const inboxBusy = ref(false);
 const inboxEntries = ref<InboxEntry[]>([]);
+const inboxQuery = ref("");
+const inboxFilter = ref<"all" | "unregistered" | "registered">("all");
+type InboxSortKey = "name" | "mtime" | "source" | "kind" | "registered";
+const inboxSortKey = ref<InboxSortKey>("mtime");
+const inboxSortDir = ref<"asc" | "desc">("desc");
+
+function toggleInboxSort(key: InboxSortKey) {
+  if (inboxSortKey.value === key) {
+    inboxSortDir.value = inboxSortDir.value === "desc" ? "asc" : "desc";
+  } else {
+    inboxSortKey.value = key;
+    inboxSortDir.value = key === "name" || key === "source" ? "asc" : "desc";
+  }
+}
+
+function inboxKindLabel(kind: string) {
+  if (kind === "clip") return t("inboxKindClip");
+  if (kind === "convert") return t("inboxKindConvert");
+  return t("inboxKindUnknown");
+}
+
+function inboxSourceLabel(source: string) {
+  const s = source.trim();
+  if (!s) return t("inboxSourceNone");
+  try {
+    if (/^https?:\/\//i.test(s)) {
+      const u = new URL(s);
+      return u.hostname + (u.pathname === "/" ? "" : u.pathname);
+    }
+  } catch {
+    /* fall through */
+  }
+  const parts = s.split(/[/\\]/);
+  return parts[parts.length - 1] || s;
+}
+
+function formatInboxMtime(sec: number) {
+  if (!sec) return t("inboxSourceNone");
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+const inboxVisible = computed(() => {
+  const q = inboxQuery.value.trim().toLowerCase();
+  const rows = inboxEntries.value.filter((e) => {
+    if (inboxFilter.value === "registered" && !e.registered) return false;
+    if (inboxFilter.value === "unregistered" && e.registered) return false;
+    if (!q) return true;
+    return e.name.toLowerCase().includes(q) || e.source.toLowerCase().includes(q);
+  });
+  const key = inboxSortKey.value;
+  const dir = inboxSortDir.value === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let cmp = 0;
+    if (key === "mtime") cmp = a.mtime - b.mtime;
+    else if (key === "registered") cmp = Number(a.registered) - Number(b.registered);
+    else if (key === "kind") cmp = a.kind.localeCompare(b.kind);
+    else if (key === "source") cmp = a.source.localeCompare(b.source, undefined, { sensitivity: "base" });
+    else cmp = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    return cmp * dir || a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
+});
 
 async function refreshInbox() {
   inboxBusy.value = true;
@@ -1289,6 +1502,15 @@ async function refreshInbox() {
 
 async function openInboxBrowser() {
   inboxOpen.value = true;
+  inboxQuery.value = "";
+  inboxFilter.value = "all";
+  inboxSortKey.value = "mtime";
+  inboxSortDir.value = "desc";
+  try {
+    await loadSettings();
+  } catch {
+    /* hint may be stale; listing still works */
+  }
   await refreshInbox();
 }
 
@@ -1567,6 +1789,9 @@ async function handleMenu(action: string) {
     case "tools-browse-inbox":
       await openInboxBrowser();
       break;
+    case "assets-folder-import":
+      await importFolder();
+      break;
     case "assets-generate":
       await generateAsset();
       break;
@@ -1641,8 +1866,23 @@ async function focusAppWindow() {
 async function openPathsFromOs(paths: string[]) {
   if (!paths.length) return;
   await focusAppWindow();
-  const supported = paths.filter((p) => p && isSupportedPath(p));
-  const others = paths.filter((p) => p && !isSupportedPath(p));
+  const dirs: string[] = [];
+  const rest: string[] = [];
+  for (const p of paths) {
+    if (!p) continue;
+    try {
+      if (await pathIsDir(p)) dirs.push(p);
+      else rest.push(p);
+    } catch {
+      rest.push(p);
+    }
+  }
+  for (const dir of dirs) {
+    await importFolder(dir);
+  }
+  if (!rest.length) return;
+  const supported = rest.filter((p) => isSupportedPath(p));
+  const others = rest.filter((p) => !isSupportedPath(p));
   for (const path of supported) {
     await openPath(path);
   }
@@ -1671,6 +1911,21 @@ async function openPathsFromOs(paths: string[]) {
 }
 
 const fileDropActive = ref(false);
+const fileDropHint = ref<"files" | "folder">("files");
+
+async function markDropHint(paths: string[]) {
+  fileDropHint.value = "files";
+  for (const p of paths) {
+    try {
+      if (await pathIsDir(p)) {
+        fileDropHint.value = "folder";
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 onMounted(async () => {
   await refreshRecent();
@@ -1705,6 +1960,7 @@ onMounted(async () => {
       const kind = event.payload.type;
       if (kind === "enter") {
         fileDropActive.value = event.payload.paths.length > 0;
+        void markDropHint(event.payload.paths ?? []);
         return;
       }
       if (kind === "over") return;
@@ -1760,8 +2016,17 @@ watch(
     @click="recentOpen = false; charsOpen = false; tableOpen = false; sourceMenuOpen = false"
   >
     <div v-if="fileDropActive" class="file-drop-overlay" aria-hidden="true">
-      {{ t("dropConvertHint") }}
+      {{ fileDropHint === "folder" ? t("dropFolderHint") : t("dropConvertHint") }}
     </div>
+
+    <FormulaEditorModal
+      :open="formulaOpen"
+      :latex="formulaLatex"
+      :mode="formulaMode"
+      :editing="formulaEditing"
+      @close="closeFormulaEditor"
+      @confirm="onFormulaConfirm"
+    />
 
     <ConvertModal
       :open="convertOpen"
@@ -1835,29 +2100,127 @@ watch(
         role="dialog"
         @keydown.escape.prevent="inboxOpen = false"
       >
-        <h2 class="register-modal-title">{{ t("browseInbox") }}</h2>
-        <p class="register-modal-hint">{{ settingsDraft.inboxDir || "~/Downloads/MonolithInbox" }}</p>
-        <div class="register-actions" style="margin-top: 0; margin-bottom: 10px">
-          <button type="button" :disabled="inboxBusy" @click="refreshInbox">
-            {{ t("inboxRefresh") }}
-          </button>
-          <button type="button" @click="inboxOpen = false">{{ t("cancel") }}</button>
+        <header class="inbox-head">
+          <div class="inbox-head-copy">
+            <h2 class="register-modal-title">{{ t("browseInbox") }}</h2>
+            <p class="inbox-path" :title="settingsDraft.inboxDir || ''">
+              {{ settingsDraft.inboxDir || "~/Downloads/MonolithInbox" }}
+            </p>
+          </div>
+          <div class="inbox-head-actions">
+            <span class="inbox-count">{{ t("inboxCount", { shown: inboxVisible.length, total: inboxEntries.length }) }}</span>
+            <button type="button" class="inbox-ghost" :disabled="inboxBusy" @click="refreshInbox">
+              {{ t("inboxRefresh") }}
+            </button>
+            <button type="button" class="settings-close" :aria-label="t('cancel')" @click="inboxOpen = false">
+              ✕
+            </button>
+          </div>
+        </header>
+        <div class="inbox-toolbar">
+          <input
+            v-model="inboxQuery"
+            type="search"
+            class="inbox-search"
+            :placeholder="t('inboxSearchPlaceholder')"
+            :disabled="inboxBusy"
+          />
+          <div class="inbox-seg" role="tablist">
+            <button
+              type="button"
+              :class="{ active: inboxFilter === 'all' }"
+              @click="inboxFilter = 'all'"
+            >
+              {{ t("inboxFilterAll") }}
+            </button>
+            <button
+              type="button"
+              :class="{ active: inboxFilter === 'unregistered' }"
+              @click="inboxFilter = 'unregistered'"
+            >
+              {{ t("inboxUnregistered") }}
+            </button>
+            <button
+              type="button"
+              :class="{ active: inboxFilter === 'registered' }"
+              @click="inboxFilter = 'registered'"
+            >
+              {{ t("inboxRegistered") }}
+            </button>
+          </div>
         </div>
         <div v-if="inboxBusy" class="inbox-empty">…</div>
         <div v-else-if="!inboxEntries.length" class="inbox-empty">{{ t("browseInboxEmpty") }}</div>
-        <ul v-else class="inbox-list">
-          <li v-for="entry in inboxEntries" :key="entry.path" class="inbox-row">
-            <button type="button" class="inbox-row-main" @click="openInboxEntry(entry)">
-              <span class="inbox-name" :title="entry.path">{{ entry.name }}</span>
-              <span
-                class="inbox-badge"
-                :class="entry.registered ? 'inbox-badge--yes' : 'inbox-badge--no'"
+        <div v-else-if="!inboxVisible.length" class="inbox-empty">{{ t("inboxNoMatch") }}</div>
+        <div v-else class="inbox-table-wrap">
+          <table class="inbox-table">
+            <colgroup>
+              <col class="inbox-col-name" />
+              <col class="inbox-col-mtime" />
+              <col class="inbox-col-source" />
+              <col class="inbox-col-kind" />
+              <col class="inbox-col-status" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>
+                  <button type="button" @click="toggleInboxSort('name')">
+                    {{ t("inboxColName") }}
+                    <span v-if="inboxSortKey === 'name'" class="inbox-sort">{{ inboxSortDir === "asc" ? "↑" : "↓" }}</span>
+                  </button>
+                </th>
+                <th>
+                  <button type="button" @click="toggleInboxSort('mtime')">
+                    {{ t("inboxColMtime") }}
+                    <span v-if="inboxSortKey === 'mtime'" class="inbox-sort">{{ inboxSortDir === "asc" ? "↑" : "↓" }}</span>
+                  </button>
+                </th>
+                <th>
+                  <button type="button" @click="toggleInboxSort('source')">
+                    {{ t("inboxColSource") }}
+                    <span v-if="inboxSortKey === 'source'" class="inbox-sort">{{ inboxSortDir === "asc" ? "↑" : "↓" }}</span>
+                  </button>
+                </th>
+                <th>
+                  <button type="button" @click="toggleInboxSort('kind')">
+                    {{ t("inboxColKind") }}
+                    <span v-if="inboxSortKey === 'kind'" class="inbox-sort">{{ inboxSortDir === "asc" ? "↑" : "↓" }}</span>
+                  </button>
+                </th>
+                <th>
+                  <button type="button" @click="toggleInboxSort('registered')">
+                    {{ t("inboxColStatus") }}
+                    <span v-if="inboxSortKey === 'registered'" class="inbox-sort">{{ inboxSortDir === "asc" ? "↑" : "↓" }}</span>
+                  </button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="entry in inboxVisible"
+                :key="entry.path"
+                tabindex="0"
+                @click="openInboxEntry(entry)"
+                @keydown.enter.prevent="openInboxEntry(entry)"
               >
-                {{ entry.registered ? t("inboxRegistered") : t("inboxUnregistered") }}
-              </span>
-            </button>
-          </li>
-        </ul>
+                <td class="inbox-name" :title="entry.path">{{ entry.name }}</td>
+                <td class="inbox-mtime">{{ formatInboxMtime(entry.mtime) }}</td>
+                <td class="inbox-source" :title="entry.source || ''">{{ inboxSourceLabel(entry.source) }}</td>
+                <td>
+                  <span class="inbox-kind" :class="'inbox-kind--' + entry.kind">{{ inboxKindLabel(entry.kind) }}</span>
+                </td>
+                <td>
+                  <span
+                    class="inbox-badge"
+                    :class="entry.registered ? 'inbox-badge--yes' : 'inbox-badge--no'"
+                  >
+                    {{ entry.registered ? t("inboxRegistered") : t("inboxUnregistered") }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -1941,6 +2304,7 @@ watch(
                 </label>
                 <label class="settings-field">
                   <span>{{ t("settingsInboxDir") }}</span>
+                  <p class="settings-lead">{{ t("settingsInboxHint") }}</p>
                   <div class="settings-row">
                     <input v-model="settingsDraft.inboxDir" type="text" :disabled="settingsBusy" />
                     <button type="button" :disabled="settingsBusy" @click="pickSettingsDir('inboxDir')">
@@ -2167,6 +2531,15 @@ watch(
           <button
             type="button"
             class="tb-icon-btn"
+            :title="t('folderImportTitle')"
+            :aria-label="t('folderImport')"
+            @click="importFolder()"
+          >
+            <ToolbarIcon name="folderImport" />
+          </button>
+          <button
+            type="button"
+            class="tb-icon-btn"
             :title="t('convertToMd')"
             :aria-label="t('convertToMd')"
             @click="convertFilePicker"
@@ -2381,26 +2754,6 @@ watch(
       </div>
 
       <div class="tb-group">
-        <select
-          class="tb-select tb-select-heading"
-          :disabled="!(canEditMd || showEdit)"
-          :title="t('heading')"
-          :aria-label="t('heading')"
-          :value="headingSelect"
-          @change="onHeadingChange"
-        >
-          <option value="">{{ t("headingPlaceholder") }}</option>
-          <option value="0">{{ t("paragraph") }}</option>
-          <option value="1">{{ t("h1") }}</option>
-          <option value="2">{{ t("h2") }}</option>
-          <option value="3">{{ t("h3") }}</option>
-          <option value="4">{{ t("h4") }}</option>
-          <option value="5">{{ t("h5") }}</option>
-          <option value="6">{{ t("h6") }}</option>
-        </select>
-      </div>
-
-      <div class="tb-group">
         <button
           type="button"
           class="tb-icon-btn"
@@ -2436,6 +2789,27 @@ watch(
         </select>
       </div>
 
+      <div class="tb-group">
+        <select
+          class="tb-select tb-select-heading"
+          :disabled="!(canEditMd || showEdit)"
+          :title="t('heading')"
+          :aria-label="t('heading')"
+          :value="headingSelect"
+          @change="onHeadingChange"
+        >
+          <option value="">{{ t("headingPlaceholder") }}</option>
+          <option value="0">{{ t("paragraph") }}</option>
+          <option value="1">{{ t("h1") }}</option>
+          <option value="2">{{ t("h2") }}</option>
+          <option value="3">{{ t("h3") }}</option>
+          <option value="4">{{ t("h4") }}</option>
+          <option value="5">{{ t("h5") }}</option>
+          <option value="6">{{ t("h6") }}</option>
+        </select>
+      </div>
+
+      <!-- MD format groups: B I S | code | link/img | lists | quote/table/hr -->
       <div class="tb-group md-helpers">
         <button type="button" class="tb-icon-btn" :title="`${t('bold')} (⌘B)`" :aria-label="t('bold')" :disabled="!canEditMd" @click="mdBold">
           <ToolbarIcon name="bold" />
@@ -2443,38 +2817,30 @@ watch(
         <button type="button" class="tb-icon-btn" :title="`${t('italic')} (⌘I)`" :aria-label="t('italic')" :disabled="!canEditMd" @click="mdItalic">
           <ToolbarIcon name="italic" />
         </button>
-        <button type="button" class="tb-icon-btn" :title="`${t('link')} (⌘L)`" :aria-label="t('link')" :disabled="!canEditMd" @click="mdLink">
-          <ToolbarIcon name="link" />
+        <button type="button" class="tb-icon-btn" :title="`${t('strike')} (⌘D)`" :aria-label="t('strike')" :disabled="!canEditMd" @click="mdStrike">
+          <ToolbarIcon name="strike" />
+        </button>
+      </div>
+
+      <div class="tb-group md-helpers">
+        <button type="button" class="tb-icon-btn" :title="t('inlineCode')" :aria-label="t('inlineCode')" :disabled="!canEditMd" @click="mdCode">
+          <ToolbarIcon name="code" />
         </button>
         <button type="button" class="tb-icon-btn" :title="`${t('codeBlock')} (⇧⌘K)`" :aria-label="t('codeBlock')" :disabled="!canEditMd" @click="mdCodeBlock">
           <ToolbarIcon name="codeBlock" />
         </button>
-        <button
-          type="button"
-          class="tb-icon-btn"
-          :class="{ active: formatMoreOpen }"
-          :title="t('formatMoreTitle')"
-          :aria-label="t('formatMore')"
-          :disabled="!canEditMd"
-          @click="formatMoreOpen = !formatMoreOpen"
-        >
-          <ToolbarIcon name="chevronDown" />
-        </button>
       </div>
 
-      <div v-show="formatMoreOpen" class="tb-group md-helpers md-helpers--more">
-        <button type="button" class="tb-icon-btn" :title="`${t('strike')} (⌘D)`" :aria-label="t('strike')" :disabled="!canEditMd" @click="mdStrike">
-          <ToolbarIcon name="strike" />
-        </button>
-        <button type="button" class="tb-icon-btn" :title="t('inlineCode')" :aria-label="t('inlineCode')" :disabled="!canEditMd" @click="mdCode">
-          <ToolbarIcon name="code" />
+      <div class="tb-group md-helpers">
+        <button type="button" class="tb-icon-btn" :title="`${t('link')} (⌘L)`" :aria-label="t('link')" :disabled="!canEditMd" @click="mdLink">
+          <ToolbarIcon name="link" />
         </button>
         <button type="button" class="tb-icon-btn" :title="t('image')" :aria-label="t('image')" :disabled="!canEditMd" @click="mdImage">
           <ToolbarIcon name="image" />
         </button>
-        <button type="button" class="tb-icon-btn" :title="t('quote')" :aria-label="t('quote')" :disabled="!canEditMd" @click="mdQuote">
-          <ToolbarIcon name="quote" />
-        </button>
+      </div>
+
+      <div class="tb-group md-helpers">
         <button type="button" class="tb-icon-btn" :title="t('ul')" :aria-label="t('ul')" :disabled="!canEditMd" @click="mdUl">
           <ToolbarIcon name="list" />
         </button>
@@ -2484,8 +2850,11 @@ watch(
         <button type="button" class="tb-icon-btn" :title="t('task')" :aria-label="t('task')" :disabled="!canEditMd" @click="mdTask">
           <ToolbarIcon name="checkSquare" />
         </button>
-        <button type="button" class="tb-icon-btn" :title="t('hr')" :aria-label="t('hr')" :disabled="!canEditMd" @click="mdHr">
-          <ToolbarIcon name="minus" />
+      </div>
+
+      <div class="tb-group md-helpers">
+        <button type="button" class="tb-icon-btn" :title="t('quote')" :aria-label="t('quote')" :disabled="!canEditMd" @click="mdQuote">
+          <ToolbarIcon name="quote" />
         </button>
         <div class="table-wrap">
           <button
@@ -2501,45 +2870,35 @@ watch(
             <ToolbarIcon name="chevronDown" :size="12" />
           </button>
         </div>
+        <button type="button" class="tb-icon-btn" :title="t('hr')" :aria-label="t('hr')" :disabled="!canEditMd" @click="mdHr">
+          <ToolbarIcon name="minus" />
+        </button>
         <div class="chars-wrap">
           <button
+            ref="charsBtnRef"
             type="button"
             class="tb-icon-btn tb-icon-btn--menu"
+            :class="{ active: charsOpen }"
             :title="t('charsTitle')"
             :aria-label="t('charsMenu')"
             :disabled="!canEditMd"
-            @click.stop="charsOpen = !charsOpen"
+            @click.stop="toggleCharsMenu"
           >
             <ToolbarIcon name="omega" />
             <ToolbarIcon name="chevronDown" :size="12" />
           </button>
-          <div v-if="charsOpen" class="chars-menu" @click.stop>
-            <button
-              v-for="c in mdChars"
-              :key="c.label + c.title"
-              type="button"
-              class="char-item"
-              :title="c.title"
-              @click="insertMdChar(c.text)"
-            >
-              {{ c.label }}
-            </button>
-            <button
-              type="button"
-              class="char-item"
-              :title="t('softBreak')"
-              @click="insertMdChar('  \n')"
-            >
-              ↵
-            </button>
-            <button type="button" class="char-item" title="NBSP" @click="insertMdChar('\u00A0')">
-              NBSP
-            </button>
-            <button type="button" class="char-item" title="ZWSP" @click="insertMdChar('\u200B')">
-              ZWSP
-            </button>
-          </div>
         </div>
+        <button
+          type="button"
+          class="tb-icon-btn"
+          :class="{ active: formulaOpen }"
+          :title="t('formulaTitle')"
+          :aria-label="t('formula')"
+          :disabled="!canEditMd"
+          @click.stop="openFormulaEditor()"
+        >
+          <ToolbarIcon name="sigma" />
+        </button>
       </div>
     </header>
     <div class="tabbar">
@@ -2632,6 +2991,7 @@ watch(
             @focus="onWysiwygFocus"
             @scroll="onMdPreviewScroll"
             @line-click="onMdLineClick"
+            @edit-math="onEditMathFromPreview"
             @pointerdown="onMdPreviewPointer"
             @wheel.passive="onMdPreviewPointer"
           />
@@ -2729,6 +3089,37 @@ watch(
           @click="clearRecent().then(refreshRecent); recentOpen = false"
         >
           {{ t("clearRecent") }}
+        </button>
+      </div>
+      <div
+        v-if="charsOpen"
+        class="chars-menu chars-menu-flyout"
+        :style="charsMenuStyle"
+        @click.stop
+      >
+        <button
+          v-for="c in mdChars"
+          :key="c.label + c.title"
+          type="button"
+          class="char-item"
+          :title="c.title"
+          @click="insertMdChar(c.text)"
+        >
+          {{ c.label }}
+        </button>
+        <button
+          type="button"
+          class="char-item"
+          :title="t('softBreak')"
+          @click="insertMdChar('  \n')"
+        >
+          ↵
+        </button>
+        <button type="button" class="char-item" title="NBSP" @click="insertMdChar('\u00A0')">
+          NBSP
+        </button>
+        <button type="button" class="char-item" title="ZWSP" @click="insertMdChar('\u200B')">
+          ZWSP
         </button>
       </div>
       <div
@@ -2894,55 +3285,209 @@ watch(
   -webkit-app-region: no-drag;
 }
 
-.inbox-modal {
-  width: min(520px, calc(100% - 48px));
-  max-height: min(70vh, 560px);
+.register-modal.inbox-modal {
+  width: min(1120px, calc(100% - 56px));
+  height: min(86vh, 760px);
+  max-height: calc(100% - 48px);
+  padding: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.inbox-modal > .register-modal-title,
-.inbox-modal > .register-modal-hint,
-.inbox-modal > .register-actions {
+.inbox-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--hairline);
   flex: 0 0 auto;
 }
-.inbox-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  flex: 1 1 auto;
-  min-height: 0; /* allow flex child to shrink so overflow scrolls */
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.inbox-row-main {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  background: var(--bg-0);
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--text-sm);
-  text-align: left;
-}
-.inbox-row-main:hover {
-  border-color: var(--accent);
-}
-.inbox-name {
-  flex: 1;
+.inbox-head-copy {
   min-width: 0;
+}
+.inbox-head .register-modal-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  letter-spacing: 0.01em;
+}
+.inbox-path {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.inbox-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.inbox-count {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+  padding-right: 4px;
+}
+.inbox-ghost {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  cursor: pointer;
+}
+.inbox-ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.inbox-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  flex-wrap: nowrap;
+}
+.inbox-search {
+  flex: 1 1 auto;
+  min-width: 200px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg-0);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-md);
+}
+.inbox-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.inbox-seg {
+  display: flex;
+  flex: 0 0 auto;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg-0);
+}
+.inbox-seg button {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.inbox-seg button.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+.inbox-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 24px 24px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg-0);
+}
+.inbox-table {
+  width: 100%;
+  min-width: 820px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+}
+.inbox-col-name { width: 36%; }
+.inbox-col-mtime { width: 16%; }
+.inbox-col-source { width: 28%; }
+.inbox-col-kind { width: 9%; }
+.inbox-col-status { width: 11%; }
+.inbox-table th,
+.inbox-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: middle;
+}
+.inbox-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #0e1620;
+  font-weight: var(--fw-medium);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.inbox-table th button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.inbox-sort {
+  margin-left: 4px;
+  color: var(--accent);
+}
+.inbox-table tbody tr {
+  cursor: pointer;
+}
+.inbox-table tbody tr:hover {
+  background: var(--bg-2);
+}
+.inbox-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.inbox-table .inbox-name,
+.inbox-table .inbox-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inbox-table .inbox-name {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+}
+.inbox-mtime,
+.inbox-source {
+  white-space: nowrap;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.inbox-kind {
+  display: inline-block;
+  font-size: var(--text-xs);
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-2);
+}
+.inbox-kind--clip {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+.inbox-kind--convert {
+  background: var(--bg-2);
+  color: var(--text-1);
 }
 .inbox-badge {
   flex: 0 0 auto;
@@ -3644,25 +4189,35 @@ watch(
   text-align: center;
 }
 
-.chars-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 50;
+.chars-menu,
+.chars-menu-flyout {
   display: grid;
   grid-template-columns: repeat(6, minmax(36px, 1fr));
   gap: 4px;
   padding: 8px;
-  min-width: 260px;
+  box-sizing: border-box;
   background: var(--bg-2);
   border: 1px solid var(--hairline);
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  -webkit-app-region: no-drag;
 }
 
+.chars-menu-flyout .char-item,
 .char-item {
-  min-width: 36px !important;
-  padding: 6px 4px !important;
+  min-width: 36px;
+  min-height: 32px;
+  padding: 6px 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+.chars-menu-flyout .char-item:hover {
+  background: color-mix(in srgb, var(--text-1) 12%, transparent);
 }
 
 .toolbar button,
@@ -3964,4 +4519,5 @@ watch(
 .md-helpers button {
   min-width: 28px;
 }
+
 </style>

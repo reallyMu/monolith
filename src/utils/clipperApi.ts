@@ -5,6 +5,9 @@ export interface InboxEntry {
   name: string;
   registered: boolean;
   assetId: number | null;
+  mtime: number;
+  source: string;
+  kind: "clip" | "convert" | "unknown" | string;
 }
 
 export function clipperOpenInstall(): Promise<string> {

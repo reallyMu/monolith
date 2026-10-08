@@ -49,7 +49,6 @@ Global list = catalog only; do not bulk-read every body.
 |------|------|
 | `asset_list_tree` | 全局总览：夹树 `terms` + 全部 `assets` |
 | `asset_list_folder` | **主入口**：不传 `folder`=全局；传 `folder`/`browse_term_id`=该夹；`recursive` 默认 false |
-| `asset_search` | **按名查找**：`query` 必填；`mode=name`（默认）匹配备注 `displayName`、文件名、以及挂载夹/祖先夹名；`mode=fulltext` **尚未实现**（返回 `implemented:false`，禁止当名称搜）。可选 `folder` / `recursive` |
 | `asset_get` | `asset_id` / `path` / `name`（+可选 `folder`） |
 | `asset_read_content` | 读正文；记下 `mtime` |
 | `asset_register` | 登记盘上文件；可选 `folder`，省略→**root** |
@@ -66,10 +65,8 @@ Global list = catalog only; do not bulk-read every body.
 
 ### 全局查找 / Global search
 
-1. **优先** `asset_search` `{ "query": "关键词", "mode": "name" }`（可选 `folder`）
-2. 需要整夹枚举时用 `asset_list_folder` / `asset_list_tree`
-3. **不要**用 `mode=fulltext` 假装已搜正文（未实现）
-4. 缩小结果后再 `asset_read_content`
+1. `asset_list_folder`（不传 folder）或 `asset_list_tree`
+2. 按 `display_name` / 路径缩小后再读
 
 ### 登记 / Register
 

@@ -80,6 +80,29 @@ export function assetMove(assetId: number, browseTermId: number): Promise<void> 
   return invoke("asset_move", { assetId, browseTermId });
 }
 
+export function assetUnmount(
+  assetId: number,
+  browseTermId: number,
+): Promise<{ unregistered: boolean }> {
+  return invoke("asset_unmount", { assetId, browseTermId });
+}
+
+export type FolderImportResult = {
+  created: number;
+  mounted: number;
+  skippedUnsupported: number;
+  convertFailed: number;
+  depthSkipped: number;
+  messages: string[];
+};
+
+export function folderImport(
+  dir: string,
+  includeSubdirs: boolean,
+): Promise<FolderImportResult> {
+  return invoke("folder_import", { dir, includeSubdirs });
+}
+
 export function assetRename(assetId: number, displayName: string): Promise<void> {
   return invoke("asset_rename", { assetId, displayName });
 }

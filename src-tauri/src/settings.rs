@@ -9,7 +9,7 @@ const SETTINGS_FILE: &str = "settings.json";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
-    /// Markdown clip inbox (Chrome downloads target relative name still MonolithInbox by default).
+    /// Import directory: web clips and Convert→Markdown default output.
     pub inbox_dir: String,
     /// Preferred directory for Open / Convert file dialogs (empty = OS default).
     pub default_open_dir: String,
@@ -126,15 +126,15 @@ pub fn settings_save(settings: AppSettings) -> Result<SettingsView, String> {
     s.default_open_dir = s.default_open_dir.trim().to_string();
     s.default_save_dir = s.default_save_dir.trim().to_string();
     if s.inbox_dir.is_empty() {
-        return Err("剪藏 Inbox 目录不能为空".into());
+        return Err("导入目录不能为空".into());
     }
     let inbox = PathBuf::from(&s.inbox_dir);
     if !inbox.is_absolute() {
-        return Err("剪藏 Inbox 必须是绝对路径".into());
+        return Err("导入目录必须是绝对路径".into());
     }
     validate_optional_dir("default_open_dir", &s.default_open_dir)?;
     validate_optional_dir("default_save_dir", &s.default_save_dir)?;
-    fs::create_dir_all(&inbox).map_err(|e| format!("无法创建 Inbox: {e}"))?;
+    fs::create_dir_all(&inbox).map_err(|e| format!("无法创建导入目录: {e}"))?;
     save_settings(&s)?;
     settings_get()
 }

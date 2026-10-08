@@ -6,10 +6,10 @@ import { useI18n } from "../i18n";
 import ToolbarIcon from "./ToolbarIcon.vue";
 import { openDialogFilters } from "../utils/language";
 import {
-  assetDelete,
   assetListTree,
   assetListVersions,
   assetMove,
+  assetUnmount,
   assetRelocate,
   assetRename,
   assetSetCurrentVersion,
@@ -26,7 +26,7 @@ import {
   type AssetVersionDto,
   type BrowseTermDto,
 } from "../utils/assetsApi";
-import { matchAssetName } from "../utils/assetSearch";
+import { matchAssetName, matchFolderName } from "../utils/assetSearch";
 
 const props = defineProps<{
   selectedAssetId: number | null;
@@ -148,16 +148,35 @@ const rows = computed<Row[]>(() => {
   if (filtering) {
     keepAssetIds = new Set();
     keepTermIds = new Set([rootId]);
-    for (const a of tree.value.assets) {
-      if (matchAssetName(q, a.displayName, a.absolutePath)) {
-        keepAssetIds.add(a.id);
-        let tid: number | null = a.browseTermId;
-        while (tid != null && tid !== rootId) {
-          keepTermIds.add(tid);
-          const term = termById.get(tid);
-          tid = term?.parentId ?? null;
-        }
+    const subtreeKeep = new Set<number>();
+    const addAncestors = (start: number | null) => {
+      let tid: number | null = start;
+      while (tid != null && tid !== rootId) {
+        keepTermIds!.add(tid);
+        const term = termById.get(tid);
+        tid = term?.parentId ?? null;
       }
+    };
+    const addDescendants = (id: number) => {
+      for (const child of byParent.get(id) ?? []) {
+        keepTermIds!.add(child.id);
+        subtreeKeep.add(child.id);
+        addDescendants(child.id);
+      }
+    };
+    for (const term of tree.value.terms) {
+      if (term.id === rootId) continue;
+      if (!matchFolderName(q, term.displayName)) continue;
+      keepTermIds.add(term.id);
+      subtreeKeep.add(term.id);
+      addAncestors(term.parentId ?? rootId);
+      addDescendants(term.id);
+    }
+    for (const a of tree.value.assets) {
+      const inHitFolder = subtreeKeep.has(a.browseTermId);
+      if (!inHitFolder && !matchAssetName(q, a.displayName, a.absolutePath)) continue;
+      keepAssetIds.add(a.id);
+      addAncestors(a.browseTermId);
     }
   }
 
@@ -446,19 +465,6 @@ async function ctxRelocate() {
   if (a) await relocateAsset(a);
 }
 
-async function ctxMoveTop() {
-  const a = ctxMenu.value?.asset;
-  closeCtxMenu();
-  if (!a || !tree.value) return;
-  if (a.browseTermId === tree.value.rootTermId) return;
-  try {
-    await assetMove(a.id, tree.value.rootTermId);
-    await refresh();
-  } catch (e) {
-    emit("error", String(e));
-  }
-}
-
 function ctxSaveNewVersion() {
   const a = ctxMenu.value?.asset;
   closeCtxMenu();
@@ -665,14 +671,14 @@ async function removeFolder(term: BrowseTermDto) {
 }
 
 async function removeAsset(asset: AssetDto) {
-  const ok = await ask(t("assetDeleteConfirm", { name: asset.displayName }), {
-    title: t("assetDeleteTitle"),
+  const ok = await ask(t("assetUnmountConfirm", { name: asset.displayName }), {
+    title: t("assetUnmountTitle"),
     kind: "warning",
   });
   if (!ok) return;
   try {
-    await assetDelete(asset.id);
-    if (props.selectedAssetId === asset.id) emit("selectAsset", null);
+    const r = await assetUnmount(asset.id, asset.browseTermId);
+    if (r.unregistered && props.selectedAssetId === asset.id) emit("selectAsset", null);
     await refresh();
   } catch (e) {
     emit("error", String(e));
@@ -972,18 +978,11 @@ function isRenaming(termId: number) {
           {{ t("ctxCopyPath") }}
         </button>
         <button type="button" @click="ctxRelocate">{{ t("assetRelocate") }}</button>
-        <button
-          type="button"
-          :disabled="!tree || ctxMenu.asset.browseTermId === tree.rootTermId"
-          @click="ctxMoveTop"
-        >
-          {{ t("ctxMoveTop") }}
-        </button>
         <div class="ab-ctx-sep" />
         <button type="button" @click="ctxSaveNewVersion">{{ t("saveNewVersion") }}</button>
         <div class="ab-ctx-sep" />
         <button type="button" class="ab-ctx-danger" @click="ctxUnregister">
-          {{ t("ctxUnregister") }}
+          {{ t("ctxUnmount") }}
         </button>
       </div>
 

@@ -410,6 +410,35 @@ defineExpose({
     editor.executeEdits("md-helper", [{ range: sel, text, forceMoveMarkers: true }]);
     editor.focus();
   },
+  /** UTF-16 offset of cursor (selection start). */
+  getCursorOffset: (): number => {
+    const model = editor?.getModel();
+    const pos = editor?.getPosition();
+    if (!model || !pos) return -1;
+    return model.getOffsetAt(pos);
+  },
+  getSelectedText: (): string => {
+    const model = editor?.getModel();
+    const sel = editor?.getSelection();
+    if (!model || !sel) return "";
+    return model.getValueInRange(sel);
+  },
+  /** Replace [start, end) UTF-16 offsets with `text`. */
+  replaceOffsetRange: (start: number, end: number, text: string) => {
+    if (!editor || props.readOnly) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const s = Math.max(0, Math.min(start, end));
+    const e = Math.max(0, Math.max(start, end));
+    const range = {
+      startLineNumber: model.getPositionAt(s).lineNumber,
+      startColumn: model.getPositionAt(s).column,
+      endLineNumber: model.getPositionAt(e).lineNumber,
+      endColumn: model.getPositionAt(e).column,
+    };
+    editor.executeEdits("md-formula", [{ range, text, forceMoveMarkers: true }]);
+    editor.focus();
+  },
   /** Set ATX heading level 1–6 on selected lines (strips existing # prefix). */
   setHeadingLevel: (level: number) => {
     if (!editor || props.readOnly) return;

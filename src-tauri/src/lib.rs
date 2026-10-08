@@ -1,6 +1,9 @@
 mod assets;
 mod clipper;
 mod convert;
+mod docx_altchunk;
+mod folder_import;
+mod i18n;
 mod mcp_install;
 pub mod mcp_server;
 mod settings;
@@ -11,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    AppHandle, Emitter, Manager, RunEvent,
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
 
 const MAX_RECENT: usize = 20;
@@ -138,6 +141,11 @@ fn take_pending_opens() -> Vec<String> {
 }
 
 #[tauri::command]
+fn path_is_dir(path: String) -> bool {
+    Path::new(&path).is_dir()
+}
+
+#[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
     let p = Path::new(&path);
     if !p.is_file() {
@@ -191,27 +199,32 @@ fn rebuild_menu(app: &AppHandle, recent: &[String]) -> Result<(), String> {
 }
 
 fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, String> {
-    let new_item = MenuItem::with_id(app, "file-new", "New", true, Some("CmdOrCtrl+N"))
+    use i18n::{menu as m, MenuMsg as K};
+
+    let new_item = MenuItem::with_id(app, "file-new", m(K::New), true, Some("CmdOrCtrl+N"))
         .map_err(|e| e.to_string())?;
-    let open_item = MenuItem::with_id(app, "file-open", "Open…", true, Some("CmdOrCtrl+O"))
+    let open_item = MenuItem::with_id(app, "file-open", m(K::Open), true, Some("CmdOrCtrl+O"))
         .map_err(|e| e.to_string())?;
-    let save_item = MenuItem::with_id(app, "file-save", "Save", true, Some("CmdOrCtrl+S"))
+    let save_item = MenuItem::with_id(app, "file-save", m(K::Save), true, Some("CmdOrCtrl+S"))
         .map_err(|e| e.to_string())?;
-    let save_as_item =
-        MenuItem::with_id(app, "file-save-as", "Save As…", true, Some("Shift+CmdOrCtrl+S"))
-            .map_err(|e| e.to_string())?;
-    let convert_item = MenuItem::with_id(
+    let save_as_item = MenuItem::with_id(
         app,
-        "file-convert-md",
-        "Convert to Markdown…",
+        "file-save-as",
+        m(K::SaveAs),
         true,
-        None::<&str>,
+        Some("Shift+CmdOrCtrl+S"),
     )
     .map_err(|e| e.to_string())?;
-    let inbox_item = MenuItem::with_id(
+    let convert_item =
+        MenuItem::with_id(app, "file-convert-md", m(K::ConvertMd), true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let inbox_item =
+        MenuItem::with_id(app, "tools-browse-inbox", m(K::BrowseInbox), true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let folder_import_item = MenuItem::with_id(
         app,
-        "tools-browse-inbox",
-        "Browse Clip Inbox…",
+        "assets-folder-import",
+        m(K::FolderImport),
         true,
         None::<&str>,
     )
@@ -219,7 +232,7 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let asset_register_item = MenuItem::with_id(
         app,
         "assets-generate",
-        "Register Asset…",
+        m(K::RegisterAsset),
         true,
         None::<&str>,
     )
@@ -227,7 +240,7 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let asset_version_item = MenuItem::with_id(
         app,
         "assets-new-version",
-        "Save as New Version",
+        m(K::SaveNewVersion),
         true,
         None::<&str>,
     )
@@ -235,15 +248,16 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let settings_item = MenuItem::with_id(
         app,
         "app-settings",
-        "Settings…",
+        m(K::Settings),
         true,
         Some("CmdOrCtrl+,"),
     )
     .map_err(|e| e.to_string())?;
-    let close_item = MenuItem::with_id(app, "file-close", "Close Tab", true, Some("CmdOrCtrl+W"))
-        .map_err(|e| e.to_string())?;
+    let close_item =
+        MenuItem::with_id(app, "file-close", m(K::CloseTab), true, Some("CmdOrCtrl+W"))
+            .map_err(|e| e.to_string())?;
     let clear_recent_item =
-        MenuItem::with_id(app, "file-clear-recent", "Clear Recent", true, None::<&str>)
+        MenuItem::with_id(app, "file-clear-recent", m(K::ClearRecent), true, None::<&str>)
             .map_err(|e| e.to_string())?;
 
     let r0 = recent_item(app, recent, 0)?;
@@ -261,7 +275,7 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let recent_menu = Submenu::with_id_and_items(
         app,
         "recent-menu",
-        "Open Recent",
+        m(K::OpenRecent),
         true,
         &[
             &r0, &r1, &r2, &r3, &r4, &r5, &r6, &r7, &r8, &r9, &sep_r, &clear_recent_item,
@@ -274,18 +288,20 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let sep3 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let sep4 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let sep5 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
-    let quit = PredefinedMenuItem::quit(app, Some("Quit Monolith")).map_err(|e| e.to_string())?;
+    let quit =
+        PredefinedMenuItem::quit(app, Some(m(K::QuitApp))).map_err(|e| e.to_string())?;
 
     // Groups: file ops + inbox | asset register/version | settings | close/quit
     let file_menu = Submenu::with_id_and_items(
         app,
         "file",
-        "File",
+        m(K::File),
         true,
         &[
             &new_item,
             &open_item,
             &inbox_item,
+            &folder_import_item,
             &convert_item,
             &save_item,
             &save_as_item,
@@ -304,12 +320,19 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     )
     .map_err(|e| e.to_string())?;
 
-    let undo = MenuItem::with_id(app, "edit-undo", "Undo", true, Some("CmdOrCtrl+Z"))
+    let undo = MenuItem::with_id(app, "edit-undo", m(K::Undo), true, Some("CmdOrCtrl+Z"))
         .map_err(|e| e.to_string())?;
-    let redo = MenuItem::with_id(app, "edit-redo", "Redo", true, Some("Shift+CmdOrCtrl+Z"))
+    let redo = MenuItem::with_id(
+        app,
+        "edit-redo",
+        m(K::Redo),
+        true,
+        Some("Shift+CmdOrCtrl+Z"),
+    )
+    .map_err(|e| e.to_string())?;
+    let find = MenuItem::with_id(app, "edit-find", m(K::Find), true, Some("CmdOrCtrl+F"))
         .map_err(|e| e.to_string())?;
-    let find = MenuItem::with_id(app, "edit-find", "Find…", true, Some("CmdOrCtrl+F"))
-        .map_err(|e| e.to_string())?;
+    // Predefined labels follow the OS language automatically.
     let cut = PredefinedMenuItem::cut(app, None).map_err(|e| e.to_string())?;
     let copy = PredefinedMenuItem::copy(app, None).map_err(|e| e.to_string())?;
     let paste = PredefinedMenuItem::paste(app, None).map_err(|e| e.to_string())?;
@@ -320,7 +343,7 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let edit_menu = Submenu::with_id_and_items(
         app,
         "edit",
-        "Edit",
+        m(K::Edit),
         true,
         &[
             &undo,
@@ -337,18 +360,19 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     .map_err(|e| e.to_string())?;
 
     let view_edit =
-        MenuItem::with_id(app, "view-edit", "Edit Only", true, None::<&str>).map_err(|e| e.to_string())?;
+        MenuItem::with_id(app, "view-edit", m(K::EditOnly), true, None::<&str>)
+            .map_err(|e| e.to_string())?;
     let view_preview =
-        MenuItem::with_id(app, "view-preview", "Preview Only", true, None::<&str>)
+        MenuItem::with_id(app, "view-preview", m(K::PreviewOnly), true, None::<&str>)
             .map_err(|e| e.to_string())?;
     let view_split =
-        MenuItem::with_id(app, "view-split", "Compare Render", true, None::<&str>)
+        MenuItem::with_id(app, "view-split", m(K::CompareRender), true, None::<&str>)
             .map_err(|e| e.to_string())?;
     // Claim ⌘E at the menu layer so macOS/WebKit cannot treat it as "Use Selection for Find".
     let view_toggle = MenuItem::with_id(
         app,
         "view-cycle-mode",
-        "Cycle Edit / Preview / Compare",
+        m(K::CycleView),
         true,
         Some("CmdOrCtrl+E"),
     )
@@ -358,7 +382,7 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let view_menu = Submenu::with_id_and_items(
         app,
         "view",
-        "View",
+        m(K::View),
         true,
         &[&view_edit, &view_preview, &view_split, &sep_v, &view_toggle],
     )
@@ -372,7 +396,7 @@ fn build_menu(app: &AppHandle, recent: &[String]) -> Result<Menu<tauri::Wry>, St
     let window_menu = Submenu::with_id_and_items(
         app,
         "window",
-        "Window",
+        m(K::Window),
         true,
         &[&minimize, &maximize, &sep_w, &close_win],
     )
@@ -396,7 +420,7 @@ fn recent_item(
         MenuItem::with_id(app, &id, label, true, None::<&str>).map_err(|e| e.to_string())
     } else {
         let label = if index == 0 && recent.is_empty() {
-            "(Empty)"
+            i18n::menu(i18n::MenuMsg::RecentEmpty)
         } else {
             "—"
         };
@@ -438,8 +462,34 @@ pub fn run() {
             }
             let _ = app.emit("menu-action", id);
         })
+        // macOS ❌ = hide to Dock (keep process). Fullscreen must exit first or
+        // macOS leaves a black Space; see tauri#10580.
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if window.is_fullscreen().unwrap_or(false) {
+                    let win = window.clone();
+                    let _ = window.set_fullscreen(false);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(700));
+                        let win2 = win.clone();
+                        let _ = win.run_on_main_thread(move || {
+                            let _ = win2.hide();
+                        });
+                    });
+                } else {
+                    let _ = window.hide();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (window, event);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             take_pending_opens,
+            path_is_dir,
             read_text_file,
             write_text_file,
             list_recent,
@@ -449,6 +499,7 @@ pub fn run() {
             assets::asset_create_from_path,
             assets::asset_delete,
             assets::asset_move,
+            assets::asset_unmount,
             assets::asset_rename,
             assets::asset_relocate,
             assets::asset_find_by_path,
@@ -467,6 +518,7 @@ pub fn run() {
             convert::conversion_latest_source,
             convert::convert_run,
             convert::convert_cancel,
+            folder_import::folder_import,
             clipper::clipper_inbox_dir,
             clipper::clipper_list_inbox,
             clipper::clipper_ensure_extension,
@@ -483,10 +535,25 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // RunEvent::Opened is macOS-only (Finder Open With / double-click).
             #[cfg(target_os = "macos")]
-            if let RunEvent::Opened { urls } = event {
-                handle_opened(app, urls);
+            match event {
+                RunEvent::Opened { urls } => handle_opened(app, urls),
+                RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    if !has_visible_windows {
+                        bring_to_front(app);
+                    }
+                }
+                // Hide-on-close already prevented teardown; if something still
+                // requests exit without a code, stay alive. ⌘Q uses terminate.
+                RunEvent::ExitRequested { api, code, .. } => {
+                    if code.is_none() {
+                        api.prevent_exit();
+                    }
+                }
+                _ => {}
             }
             #[cfg(not(target_os = "macos"))]
             {

@@ -1,10 +1,12 @@
 //! Web clipper install helpers (extension release under App Support).
 
 use crate::assets::AssetDb;
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Manager, State};
 
 /// Unpacked Chrome extension — App-managed under Application Support (not Downloads).
@@ -89,15 +91,91 @@ pub struct InboxEntryDto {
     pub name: String,
     pub registered: bool,
     pub asset_id: Option<i64>,
+    /// Unix seconds (mtime). 0 if unknown.
+    pub mtime: i64,
+    /// conversion_log input_path (URL or source file); empty if none.
+    pub source: String,
+    /// `clip` | `convert` | `unknown`
+    pub kind: String,
 }
 
-/// List Markdown clips in MonolithInbox and whether each is already an asset.
-#[tauri::command]
-pub fn clipper_list_inbox(db: State<'_, AssetDb>) -> Result<Vec<InboxEntryDto>, String> {
-    let dir = PathBuf::from(clipper_inbox_dir()?);
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+fn mtime_secs(path: &Path) -> i64 {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn classify_kind(tool: &str, input: &str) -> &'static str {
+    let t = tool.trim();
+    let inp = input.trim();
+    if inp.starts_with("http://") || inp.starts_with("https://") || t == "monolith-clipper" {
+        "clip"
+    } else if !inp.is_empty() || t == "downmark" {
+        "convert"
+    } else {
+        "unknown"
+    }
+}
+
+/// Latest success (input_path, tool) per output_path. Read-only; does not insert logs.
+fn latest_success_origins(conn: &Connection) -> Result<HashMap<String, (String, String)>, String> {
+    let mut map = HashMap::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT output_path, input_path, tool FROM conversion_log
+             WHERE status = 'success'
+             ORDER BY finished_at DESC, id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (out, inp, tool) = row.map_err(|e| e.to_string())?;
+        map.entry(out).or_insert((inp, tool));
+    }
+    Ok(map)
+}
+
+fn lookup_asset_id(conn: &rusqlite::Connection, abs: &str, dir: &Path, name: &str) -> Option<i64> {
+    let asset_id: Option<i64> = conn
+        .query_row(
+            "SELECT asset_id FROM asset_version WHERE absolute_path = ?1",
+            params![abs],
+            |r| r.get(0),
+        )
+        .ok();
+    asset_id.or_else(|| {
+        let raw = dir.join(name).to_string_lossy().into_owned();
+        conn.query_row(
+            "SELECT asset_id FROM asset_version WHERE absolute_path = ?1",
+            params![&raw],
+            |r| r.get(0),
+        )
+        .ok()
+    })
+}
+
+/// List top-level `.md` files in `dir` and whether each path is already an asset.
+fn list_md_entries_in_dir(
+    dir: &Path,
+    conn: &Connection,
+) -> Result<Vec<InboxEntryDto>, String> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let origins = latest_success_origins(conn)?;
     let mut entries = Vec::new();
-    let rd = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    let rd = fs::read_dir(dir).map_err(|e| e.to_string())?;
     for ent in rd {
         let ent = ent.map_err(|e| e.to_string())?;
         let path = ent.path();
@@ -119,39 +197,36 @@ pub fn clipper_list_inbox(db: State<'_, AssetDb>) -> Result<Vec<InboxEntryDto>, 
             .to_string();
         let abs = path
             .canonicalize()
-            .unwrap_or(path)
+            .unwrap_or(path.clone())
             .to_string_lossy()
             .into_owned();
-        let asset_id: Option<i64> = conn
-            .query_row(
-                "SELECT asset_id FROM asset_version WHERE absolute_path = ?1",
-                params![&abs],
-                |r| r.get(0),
-            )
-            .ok();
-        // Also try non-canonical form (registration may have stored the raw path).
-        let asset_id = asset_id.or_else(|| {
-            let raw = dir.join(&name).to_string_lossy().into_owned();
-            conn.query_row(
-                "SELECT asset_id FROM asset_version WHERE absolute_path = ?1",
-                params![&raw],
-                |r| r.get(0),
-            )
-            .ok()
-        });
+        let asset_id = lookup_asset_id(conn, &abs, dir, &name);
+        let raw = dir.join(&name).to_string_lossy().into_owned();
+        let (source, kind) = origins
+            .get(&abs)
+            .or_else(|| origins.get(&raw))
+            .map(|(inp, tool)| (inp.clone(), classify_kind(tool, inp).to_string()))
+            .unwrap_or_else(|| (String::new(), "unknown".into()));
         entries.push(InboxEntryDto {
             path: abs,
             name,
             registered: asset_id.is_some(),
             asset_id,
+            mtime: mtime_secs(&path),
+            source,
+            kind,
         });
     }
-    entries.sort_by(|a, b| {
-        let ma = fs::metadata(&a.path).and_then(|m| m.modified()).ok();
-        let mb = fs::metadata(&b.path).and_then(|m| m.modified()).ok();
-        mb.cmp(&ma).then_with(|| a.name.cmp(&b.name))
-    });
+    entries.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
     Ok(entries)
+}
+
+/// List Markdown files in the import directory and whether each is already an asset.
+#[tauri::command]
+pub fn clipper_list_inbox(db: State<'_, AssetDb>) -> Result<Vec<InboxEntryDto>, String> {
+    let dir = PathBuf::from(clipper_inbox_dir()?);
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    list_md_entries_in_dir(&dir, &conn)
 }
 
 #[tauri::command]
@@ -188,4 +263,22 @@ pub fn clipper_open_install(app: AppHandle) -> Result<String, String> {
             .status();
     }
     Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_kind;
+
+    #[test]
+    fn classify_clip_from_url_or_tool() {
+        assert_eq!(classify_kind("", "https://example.com/a"), "clip");
+        assert_eq!(classify_kind("monolith-clipper", "https://x.test"), "clip");
+    }
+
+    #[test]
+    fn classify_convert_from_path_or_downmark() {
+        assert_eq!(classify_kind("downmark", "/data/a.pdf"), "convert");
+        assert_eq!(classify_kind("", "/data/a.docx"), "convert");
+        assert_eq!(classify_kind("", ""), "unknown");
+    }
 }

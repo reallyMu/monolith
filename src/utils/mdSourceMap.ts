@@ -1,4 +1,5 @@
 import MarkdownIt from "markdown-it";
+import { installMarkdownMath } from "../extensions/markdownMathPlugin";
 
 /**
  * Top-level blocks as TipTap/ProseMirror emits them (one list node, not per item).
@@ -12,6 +13,7 @@ const WYSIWYG_BLOCK_OPEN = new Set([
   "blockquote_open",
   "fence",
   "code_block",
+  "math_block",
   "table_open",
   "hr",
   "html_block",
@@ -21,6 +23,7 @@ export type SourceSpan = { start: number; end: number };
 
 function parseTokens(content: string) {
   const md = new MarkdownIt({ html: false, linkify: true, typographer: true, breaks: false });
+  installMarkdownMath(md);
   return md.parse(content || "", {});
 }
 

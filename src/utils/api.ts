@@ -25,6 +25,10 @@ export function takePendingOpens(): Promise<string[]> {
   return invoke<string[]>("take_pending_opens");
 }
 
+export function pathIsDir(path: string): Promise<boolean> {
+  return invoke<boolean>("path_is_dir", { path });
+}
+
 /** Open path with the OS default application. */
 export function openInOs(path: string): Promise<void> {
   return invoke<void>("open_in_os", { path });

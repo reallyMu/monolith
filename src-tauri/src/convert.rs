@@ -80,7 +80,124 @@ pub fn tool_for_path(path: &str) -> Result<ConvertTool, String> {
         .ok_or_else(|| format!("No converter registered for .{ext}"))
 }
 
-pub fn default_output_path(input: &str) -> Result<String, String> {
+fn numbered_md_name(stem: &str, n: u32) -> String {
+    if n <= 1 {
+        format!("{stem}.md")
+    } else {
+        format!("{stem}-{n}.md")
+    }
+}
+
+fn sources_equal(a: &str, b: &str) -> bool {
+    let a = a.trim();
+    let b = b.trim();
+    if a == b {
+        return true;
+    }
+    if crate::assets::is_http_url(a) || crate::assets::is_http_url(b) {
+        return false;
+    }
+    let ca = Path::new(a)
+        .canonicalize()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned());
+    let cb = Path::new(b)
+        .canonicalize()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned());
+    match (ca, cb) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+fn normalize_source_key(source: &str) -> String {
+    let s = source.trim();
+    if crate::assets::is_http_url(s) {
+        return s.to_string();
+    }
+    Path::new(s)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| s.to_string())
+}
+
+fn latest_logged_output(conn: &Connection, source: &str) -> Result<Option<String>, String> {
+    let key = normalize_source_key(source);
+    let raw = source.trim();
+    let row: Option<String> = conn
+        .query_row(
+            "SELECT output_path FROM conversion_log
+             WHERE status = 'success' AND (input_path = ?1 OR input_path = ?2)
+             ORDER BY finished_at DESC, id DESC
+             LIMIT 1",
+            params![&key, raw],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(start) = row else {
+        return Ok(None);
+    };
+    let mut cursor = start;
+    for _ in 0..32 {
+        let next: Option<String> = conn
+            .query_row(
+                "SELECT output_path FROM conversion_log
+                 WHERE input_path = ?1 AND status = 'relocated'
+                 ORDER BY finished_at DESC, id DESC
+                 LIMIT 1",
+                params![&cursor],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match next {
+            Some(n) if n != cursor => cursor = n,
+            _ => break,
+        }
+    }
+    Ok(Some(cursor))
+}
+
+fn output_belongs_to_source(conn: &Connection, md_path: &Path, source: &str) -> bool {
+    let abs = md_path
+        .canonicalize()
+        .unwrap_or_else(|_| md_path.to_path_buf());
+    let abs_s = abs.to_string_lossy();
+    let raw = md_path.to_string_lossy();
+    if let Ok(Some(src)) = latest_success_source(conn, abs_s.as_ref()) {
+        if sources_equal(&src.path, source) {
+            return true;
+        }
+    } else if abs_s.as_ref() != raw.as_ref() {
+        if let Ok(Some(src)) = latest_success_source(conn, raw.as_ref()) {
+            if sources_equal(&src.path, source) {
+                return true;
+            }
+        }
+    }
+    sidecar_source_url(md_path)
+        .or_else(|| fs::read_to_string(md_path).ok().and_then(|c| source_url_from_markdown(&c)))
+        .is_some_and(|u| sources_equal(&u, source))
+}
+
+fn uniquify_md_in_dir(dir: &Path, stem: &str, source: &str, conn: &Connection) -> PathBuf {
+    let mut n = 1u32;
+    loop {
+        let p = dir.join(numbered_md_name(stem, n));
+        if !p.exists() || output_belongs_to_source(conn, &p, source) {
+            return p;
+        }
+        n = n.saturating_add(1);
+        if n > 10_000 {
+            return dir.join(format!("{stem}-{}.md", chrono::Local::now().timestamp_millis()));
+        }
+    }
+}
+
+/// Prefer `output_dir/{stem}.md` when dir is non-empty; else source-adjacent `{stem}.md`.
+pub fn resolve_default_output(input: &str, convert_output_dir: &str) -> Result<String, String> {
     let p = Path::new(input);
     if !p.is_absolute() {
         return Err("Path must be absolute".into());
@@ -89,10 +206,46 @@ pub fn default_output_path(input: &str) -> Result<String, String> {
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| format!("Invalid file name: {input}"))?;
+    let dir = convert_output_dir.trim();
+    if !dir.is_empty() {
+        return Ok(Path::new(dir)
+            .join(format!("{stem}.md"))
+            .to_string_lossy()
+            .into_owned());
+    }
     let parent = p
         .parent()
         .ok_or_else(|| format!("Invalid parent for: {input}"))?;
     Ok(parent.join(format!("{stem}.md")).to_string_lossy().into_owned())
+}
+
+/// Inbox target: same source overwrites last MD; other source with the same stem gets `-2`, `-3`, …
+pub fn resolve_import_output(
+    conn: &Connection,
+    input: &str,
+    convert_output_dir: &str,
+) -> Result<String, String> {
+    let p = Path::new(input);
+    if !p.is_absolute() {
+        return Err("Path must be absolute".into());
+    }
+    let stem = p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("Invalid file name: {input}"))?;
+    let dir = convert_output_dir.trim();
+    if dir.is_empty() {
+        return resolve_default_output(input, dir);
+    }
+    if let Some(prev) = latest_logged_output(conn, input)? {
+        let prev_p = Path::new(&prev);
+        if !prev_p.exists() || output_belongs_to_source(conn, prev_p, input) {
+            return Ok(prev);
+        }
+    }
+    Ok(uniquify_md_in_dir(Path::new(dir), stem, input, conn)
+        .to_string_lossy()
+        .into_owned())
 }
 
 fn now_iso() -> String {
@@ -118,20 +271,6 @@ pub fn file_identity(path: &str) -> Result<FileIdentity, String> {
     Ok(FileIdentity { mtime, size })
 }
 
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|e| e.to_string())?;
-    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let name: String = row.get(1).map_err(|e| e.to_string())?;
-        if name == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 pub fn ensure_conversion_log_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
@@ -152,14 +291,6 @@ pub fn ensure_conversion_log_schema(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| e.to_string())?;
-    if !column_exists(conn, "conversion_log", "input_mtime")? {
-        conn.execute("ALTER TABLE conversion_log ADD COLUMN input_mtime INTEGER", [])
-            .map_err(|e| e.to_string())?;
-    }
-    if !column_exists(conn, "conversion_log", "input_size")? {
-        conn.execute("ALTER TABLE conversion_log ADD COLUMN input_size INTEGER", [])
-            .map_err(|e| e.to_string())?;
-    }
     Ok(())
 }
 
@@ -265,27 +396,15 @@ pub fn source_url_from_markdown(content: &str) -> Option<String> {
 fn sidecar_source_url(md_path: &Path) -> Option<String> {
     let parent = md_path.parent()?;
     let stem = md_path.file_stem()?.to_string_lossy();
-    let candidates = [
-        parent.join(format!("{stem}.monolith-clip.json")),
-        parent.join(format!("{stem}.md.monolith-clip.json")),
-    ];
-    for p in candidates {
-        let Ok(raw) = fs::read_to_string(&p) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            continue;
-        };
-        for key in ["source", "url", "source_url"] {
-            if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-                let s = s.trim();
-                if s.starts_with("http://") || s.starts_with("https://") {
-                    return Some(s.to_string());
-                }
-            }
-        }
+    let p = parent.join(format!("{stem}.monolith-clip.json"));
+    let raw = fs::read_to_string(&p).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let s = v.get("source").and_then(|x| x.as_str())?.trim();
+    if s.starts_with("http://") || s.starts_with("https://") {
+        Some(s.to_string())
+    } else {
+        None
     }
-    None
 }
 
 fn abs_output_path(output_path: &str) -> String {
@@ -404,9 +523,9 @@ pub fn log_output_relocated(
 }
 
 pub struct ConvertRuntime {
-    child: Mutex<Option<Child>>,
-    cancel: AtomicBool,
-    busy: AtomicBool,
+    pub(crate) child: Mutex<Option<Child>>,
+    pub(crate) cancel: AtomicBool,
+    pub(crate) busy: AtomicBool,
 }
 
 impl Default for ConvertRuntime {
@@ -438,11 +557,6 @@ fn resolve_tool_bin(app: &AppHandle, tool: ConvertTool) -> Result<PathBuf, Strin
     };
     if let Ok(res) = app.path().resource_dir() {
         push_pair(&mut candidates, res.join("third-party").join(name));
-        push_pair(
-            &mut candidates,
-            res.join("resources").join("third-party").join(name),
-        );
-        push_pair(&mut candidates, res.join("_up_").join("third-party").join(name));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -493,8 +607,12 @@ pub fn convert_is_supported(path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn convert_default_output(path: String) -> Result<String, String> {
-    default_output_path(&path)
+pub fn convert_default_output(db: State<'_, AssetDb>, path: String) -> Result<String, String> {
+    let dir = crate::settings::load_settings()
+        .map(|s| s.inbox_dir)
+        .unwrap_or_default();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    resolve_import_output(&conn, &path, &dir)
 }
 
 #[tauri::command]
@@ -542,7 +660,7 @@ pub fn convert_run(
     result
 }
 
-fn run_convert_inner(
+pub(crate) fn run_convert_inner(
     app: &AppHandle,
     db: &AssetDb,
     rt: &ConvertRuntime,
@@ -568,6 +686,29 @@ fn run_convert_inner(
         serde_json::json!({ "phase": "start", "tool": tool.as_str(), "message": bin.display().to_string() }),
     );
 
+    struct TmpHtml(PathBuf);
+    impl Drop for TmpHtml {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let alt_html = crate::docx_altchunk::unwrap_docx_for_convert(input)?;
+    let tmp_html = if let Some(html) = alt_html {
+        let p = std::env::temp_dir().join(format!(
+            "monolith-altchunk-{}-{}.html",
+            std::process::id(),
+            Local::now().timestamp_millis()
+        ));
+        fs::write(&p, html).map_err(|e| e.to_string())?;
+        Some(TmpHtml(p))
+    } else {
+        None
+    };
+    let downmark_input = tmp_html
+        .as_ref()
+        .map(|t| t.0.to_string_lossy().into_owned())
+        .unwrap_or_else(|| input_path.to_string());
+
     let mut cmd = Command::new(&bin);
     // Wrapper `run` takes <input> <output>; raw `downmark` uses -o <output> <input>.
     let is_wrapper = bin
@@ -575,9 +716,9 @@ fn run_convert_inner(
         .and_then(|s| s.to_str())
         .is_some_and(|n| n == "run");
     if is_wrapper {
-        cmd.arg(input_path).arg(output_path);
+        cmd.arg(&downmark_input).arg(output_path);
     } else {
-        cmd.arg("-o").arg(output_path).arg(input_path);
+        cmd.arg("-o").arg(output_path).arg(&downmark_input);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     // Explicit stub only — never implicit fallback.
@@ -646,14 +787,21 @@ fn run_convert_inner(
         ("cancelled", Some("cancelled by user".to_string()), false)
     } else if let Some(st) = status {
         if st.success() {
-            if Path::new(output_path).is_file() {
-                ("success", None, true)
-            } else {
+            if !Path::new(output_path).is_file() {
                 (
                     "failed",
                     Some("Converter exited 0 but output file missing".into()),
                     false,
                 )
+            } else if crate::docx_altchunk::markdown_is_blank(Path::new(output_path)) {
+                let _ = fs::remove_file(output_path);
+                (
+                    "failed",
+                    Some("Converter produced empty Markdown".into()),
+                    false,
+                )
+            } else {
+                ("success", None, true)
             }
         } else {
             (
@@ -769,8 +917,17 @@ mod tests {
     }
 
     fn tempfile_dir() -> PathBuf {
+        tempfile_dir_named("clip")
+    }
+
+    fn tempfile_dir_named(tag: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
-        dir.push(format!("monolith-clip-test-{}", std::process::id()));
+        dir.push(format!(
+            "monolith-{}-{}-{}",
+            tag,
+            std::process::id(),
+            Local::now().timestamp_millis()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -797,9 +954,178 @@ mod tests {
     #[test]
     fn default_output_same_dir_stem_md() {
         assert_eq!(
-            default_output_path("/data/report.pdf").unwrap(),
+            resolve_default_output("/data/report.pdf", "").unwrap(),
             "/data/report.md"
         );
+    }
+
+    #[test]
+    fn default_output_uses_import_dir_when_set() {
+        assert_eq!(
+            resolve_default_output("/data/report.pdf", "/out/md").unwrap(),
+            "/out/md/report.md"
+        );
+        assert_eq!(
+            resolve_default_output("/data/report.pdf", "  ").unwrap(),
+            "/data/report.md"
+        );
+    }
+
+    #[test]
+    fn import_same_source_overwrites_last_md() {
+        let conn = open_mem();
+        let dir = tempfile_dir_named("same-src");
+        let inbox = dir.join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let src = dir.join("skill.pdf");
+        fs::write(&src, b"pdf").unwrap();
+        let md = inbox.join("skill.md");
+        fs::write(&md, b"old").unwrap();
+        insert_log(
+            &conn,
+            src.to_str().unwrap(),
+            md.to_str().unwrap(),
+            "downmark",
+            "success",
+            "t1",
+            "t1",
+            None,
+            Some(1),
+            Some(1),
+        )
+        .unwrap();
+        let out = resolve_import_output(&conn, src.to_str().unwrap(), inbox.to_str().unwrap()).unwrap();
+        assert_eq!(Path::new(&out), md.as_path());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_other_source_same_stem_gets_dash_2() {
+        let conn = open_mem();
+        let dir = tempfile_dir_named("other-src");
+        let inbox = dir.join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let a = dir.join("repo-a").join("skill.pdf");
+        let b = dir.join("repo-b").join("skill.pdf");
+        fs::create_dir_all(a.parent().unwrap()).unwrap();
+        fs::create_dir_all(b.parent().unwrap()).unwrap();
+        fs::write(&a, b"a").unwrap();
+        fs::write(&b, b"b").unwrap();
+        let md = inbox.join("skill.md");
+        fs::write(&md, b"from-a").unwrap();
+        insert_log(
+            &conn,
+            a.to_str().unwrap(),
+            md.to_str().unwrap(),
+            "downmark",
+            "success",
+            "t1",
+            "t1",
+            None,
+            Some(1),
+            Some(1),
+        )
+        .unwrap();
+        let out = resolve_import_output(&conn, b.to_str().unwrap(), inbox.to_str().unwrap()).unwrap();
+        assert_eq!(Path::new(&out), inbox.join("skill-2.md").as_path());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_follows_relocate_then_overwrites() {
+        let conn = open_mem();
+        let dir = tempfile_dir_named("reloc");
+        let inbox = dir.join("inbox");
+        let elsewhere = dir.join("kept");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        let src = dir.join("doc.docx");
+        fs::write(&src, b"x").unwrap();
+        let orig = inbox.join("doc.md");
+        let moved = elsewhere.join("doc.md");
+        fs::write(&moved, b"body").unwrap();
+        insert_log(
+            &conn,
+            src.to_str().unwrap(),
+            orig.to_str().unwrap(),
+            "downmark",
+            "success",
+            "t1",
+            "t1",
+            None,
+            Some(1),
+            Some(1),
+        )
+        .unwrap();
+        log_output_relocated(&conn, orig.to_str().unwrap(), moved.to_str().unwrap()).unwrap();
+        let out = resolve_import_output(&conn, src.to_str().unwrap(), inbox.to_str().unwrap()).unwrap();
+        assert_eq!(Path::new(&out), moved.as_path());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_recreates_deleted_last_md_at_same_path() {
+        let conn = open_mem();
+        let dir = tempfile_dir_named("deleted");
+        let inbox = dir.join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let src = dir.join("gone.pdf");
+        fs::write(&src, b"pdf").unwrap();
+        let md = inbox.join("gone.md");
+        insert_log(
+            &conn,
+            src.to_str().unwrap(),
+            md.to_str().unwrap(),
+            "downmark",
+            "success",
+            "t1",
+            "t1",
+            None,
+            Some(1),
+            Some(1),
+        )
+        .unwrap();
+        assert!(!md.exists());
+        let out = resolve_import_output(&conn, src.to_str().unwrap(), inbox.to_str().unwrap()).unwrap();
+        assert_eq!(Path::new(&out), md.as_path());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_unknown_occupant_uniquifies() {
+        let conn = open_mem();
+        let dir = tempfile_dir_named("unknown");
+        let inbox = dir.join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let src = dir.join("skill.pdf");
+        fs::write(&src, b"pdf").unwrap();
+        fs::write(inbox.join("skill.md"), b"orphan").unwrap();
+        fs::write(inbox.join("skill-2.md"), b"also").unwrap();
+        let out = resolve_import_output(&conn, src.to_str().unwrap(), inbox.to_str().unwrap()).unwrap();
+        assert_eq!(Path::new(&out), inbox.join("skill-3.md").as_path());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_url_source_from_sidecar_counts_as_same() {
+        let conn = open_mem();
+        let dir = tempfile_dir_named("sidecar");
+        let inbox = dir.join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        let md = inbox.join("page.md");
+        fs::write(&md, "---\nsource: https://example.com/x\n---\n\nbody\n").unwrap();
+        fs::write(
+            inbox.join("page.monolith-clip.json"),
+            r#"{"source":"https://example.com/x"}"#,
+        )
+        .unwrap();
+        let fake_src = dir.join("page.pdf");
+        fs::write(&fake_src, b"x").unwrap();
+        // PDF convert should not steal the clip's page.md
+        let out = resolve_import_output(&conn, fake_src.to_str().unwrap(), inbox.to_str().unwrap())
+            .unwrap();
+        assert_eq!(Path::new(&out), inbox.join("page-2.md").as_path());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

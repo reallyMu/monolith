@@ -2,7 +2,11 @@ import { sanitizeFileName } from '../utils/string-utils';
 import { generateFrontmatter as generateFrontmatterCore } from './shared';
 import { Template, Property } from '../types/types';
 import { generalSettings } from './storage-utils';
-import { MONOLITH_INBOX_DIR, saveFile } from './file-utils';
+import {
+	MONOLITH_INBOX_DIR,
+	resolveInboxFilenameForSource,
+	saveFile,
+} from './file-utils';
 
 export async function generateFrontmatter(properties: Property[]): Promise<string> {
 	const typeMap: Record<string, string> = {};
@@ -60,10 +64,16 @@ export async function saveToObsidian(
 	const pageUrl = (variables['{{url}}'] || '').trim();
 	const title = (variables['{{title}}'] || formattedNoteName).trim();
 	const mdContent = ensureSourceUrlFrontmatter(fileContent, pageUrl);
+	const target = await resolveInboxFilenameForSource(
+		`${formattedNoteName}.md`,
+		pageUrl.startsWith('http://') || pageUrl.startsWith('https://') ? pageUrl : undefined,
+	);
 	const writtenMd = await saveFile({
 		content: mdContent,
-		fileName: `${formattedNoteName}.md`,
+		fileName: target.fileName,
 		mimeType: 'text/markdown',
+		sourceKey: pageUrl.startsWith('http://') || pageUrl.startsWith('https://') ? pageUrl : undefined,
+		conflictAction: target.conflictAction,
 	});
 	if (pageUrl.startsWith('http://') || pageUrl.startsWith('https://')) {
 		const stem = stemFromInboxMdPath(
@@ -84,6 +94,7 @@ export async function saveToObsidian(
 			content: sidecar,
 			fileName: `${stem}.monolith-clip.json`,
 			mimeType: 'application/json',
+			conflictAction: 'overwrite',
 		});
 	}
 }

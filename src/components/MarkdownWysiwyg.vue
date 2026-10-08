@@ -13,6 +13,7 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { Markdown } from "tiptap-markdown";
 import type { Editor } from "@tiptap/core";
+import "katex/dist/katex.min.css";
 import {
   offsetTopWithin,
   sourceSpansFromMarkdown,
@@ -20,6 +21,9 @@ import {
   type SourceSpan,
 } from "../utils/mdSourceMap";
 import { SourceHighlight, sourceHighlightKey } from "../utils/mdSourceHighlight";
+import { MathBlock, MathInline } from "../extensions/MathNodes";
+import { MermaidCodeBlock } from "../extensions/MermaidCodeBlock";
+import { listMathRanges, offsetAtLineStart, type MathMode } from "../utils/mdMathRange";
 
 const props = withDefaults(
   defineProps<{
@@ -60,6 +64,7 @@ const emit = defineEmits<{
     },
   ];
   "line-click": [line: number, viewportTop: number];
+  "edit-math": [payload: { latex: string; mode: MathMode; preferStart?: number }];
 }>();
 
 const root = ref<HTMLDivElement | null>(null);
@@ -76,7 +81,13 @@ function normMd(s: string) {
 
 const editor = useEditor({
   extensions: [
-    StarterKit.configure({ heading: { levels: [1, 2, 3, 4, 5, 6] } }),
+    StarterKit.configure({
+      heading: { levels: [1, 2, 3, 4, 5, 6] },
+      codeBlock: false,
+    }),
+    MermaidCodeBlock,
+    MathBlock,
+    MathInline,
     Link.configure({ openOnClick: false, autolink: true }),
     Image.configure({ inline: false, allowBase64: true }),
     Placeholder.configure({ placeholder: props.placeholder || "…" }),
@@ -127,6 +138,48 @@ function blocks(): HTMLElement[] {
 
 function spans(): SourceSpan[] {
   return sourceSpansFromMarkdown(props.content || "");
+}
+
+type MathEditDetail = { latex: string; mode: MathMode; pos: number | null };
+
+function topLevelIndexAtPos(pos: number): number {
+  const ed = editor.value;
+  if (!ed || pos < 0) return -1;
+  let idx = -1;
+  ed.state.doc.forEach((_node, offset, i) => {
+    if (pos >= offset && pos < offset + _node.nodeSize) idx = i;
+  });
+  return idx;
+}
+
+function onMathEditDom(ev: Event) {
+  const d = (ev as CustomEvent<MathEditDetail>).detail;
+  if (!d) return;
+  let preferStart: number | undefined;
+  const content = props.content || "";
+  if (typeof d.pos === "number" && d.mode === "block") {
+    const idx = topLevelIndexAtPos(d.pos);
+    const spanList = spans();
+    if (idx >= 0 && idx < spanList.length) {
+      preferStart = offsetAtLineStart(content, spanList[idx]!.start);
+    }
+  } else if (typeof d.pos === "number" && d.mode === "inline") {
+    const ed = editor.value;
+    if (ed) {
+      let prev = 0;
+      const needle = (d.latex || "").trim();
+      ed.state.doc.nodesBetween(0, d.pos, (node) => {
+        if (node.type.name === "mathInline" && String(node.attrs.latex || "").trim() === needle) {
+          prev += 1;
+        }
+      });
+      const matches = listMathRanges(content).filter(
+        (r) => r.mode === "inline" && r.latex.trim() === needle,
+      );
+      preferStart = matches[prev]?.start;
+    }
+  }
+  emit("edit-math", { latex: d.latex, mode: d.mode, preferStart });
 }
 
 function blockIndexForLine(line: number): number {
@@ -356,6 +409,7 @@ defineExpose({
     }"
     @mousedown="emit('focus')"
     @click="onClick"
+    @monolith-math-edit="onMathEditDom"
   >
     <EditorContent :editor="editor" />
   </div>
@@ -483,6 +537,101 @@ defineExpose({
 .md-wysiwyg :deep(th) {
   background: color-mix(in srgb, var(--muted) 16%, transparent);
   font-weight: 600;
+}
+
+.md-wysiwyg :deep(.math-block) {
+  margin: 1em 0;
+  overflow-x: auto;
+  text-align: center;
+  padding: 0.4em 0;
+}
+
+.md-wysiwyg :deep(.math-inline) {
+  display: inline-block;
+  margin: 0 0.1em;
+  vertical-align: middle;
+}
+
+.md-wysiwyg :deep(.math-error),
+.md-wysiwyg :deep(.mermaid-error) {
+  color: #c44;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.md-wysiwyg :deep(.mermaid-block) {
+  margin: 1em 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  overflow: hidden;
+}
+
+.md-wysiwyg :deep(.mermaid-zoom-bar) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  user-select: none;
+}
+
+.md-wysiwyg :deep(.mermaid-zoom-btn) {
+  min-width: 28px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.md-wysiwyg :deep(.mermaid-zoom-btn:hover:not(:disabled)) {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.md-wysiwyg :deep(.mermaid-zoom-btn:disabled) {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.md-wysiwyg :deep(.mermaid-zoom-label) {
+  min-width: 3.2em;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.md-wysiwyg :deep(.mermaid-viewport) {
+  overflow: auto;
+  height: min(70vh, 720px);
+  min-height: 360px;
+  padding: 8px;
+}
+
+.md-wysiwyg :deep(.mermaid-stage) {
+  display: inline-block;
+  min-width: min-content;
+}
+
+.md-wysiwyg :deep(.mermaid-block svg) {
+  display: block;
+  max-width: none;
+  height: auto;
+}
+
+.md-wysiwyg :deep(.mermaid-block.mermaid-error .mermaid-zoom-bar) {
+  display: none;
 }
 
 .md-wysiwyg :deep(hr) {

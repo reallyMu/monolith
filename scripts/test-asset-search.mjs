@@ -3,7 +3,7 @@
  *   node --experimental-strip-types scripts/test-asset-search.mjs
  */
 import assert from "node:assert/strict";
-import { matchAssetName } from "../src/utils/assetSearch.ts";
+import { matchAssetName, matchFolderName } from "../src/utils/assetSearch.ts";
 
 // Mirrors assets.rs::search_assets_by_name_matches_display_and_basename
 assert.equal(matchAssetName("ER", "卡包ER设计", "/tmp/card-er-design.md"), true);
@@ -22,5 +22,10 @@ assert.equal(matchAssetName("   ", "anything", "/a.md"), true);
 // No path: basename branch skipped
 assert.equal(matchAssetName("er", "plain", null), false);
 assert.equal(matchAssetName("er", "plain", undefined), false);
+
+assert.equal(matchFolderName("ai-analyzer", "ai-analyzer"), true);
+assert.equal(matchFolderName("ANALYZER", "ai-analyzer"), true);
+assert.equal(matchFolderName("ai-analyzer", "adaptyv"), false);
+assert.equal(matchFolderName("", "ai-analyzer"), true);
 
 console.log("test-asset-search: ok");

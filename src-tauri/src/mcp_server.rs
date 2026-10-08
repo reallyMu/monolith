@@ -43,7 +43,7 @@ fn tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "asset_search",
-            description: "Search assets. mode=name (default): substring on displayName / file basename. mode=fulltext: not implemented (returns implemented:false; do not treat as name search). Optional folder scopes results.",
+            description: "Search assets. mode=name (default): substring on remark/displayName, file basename, and mount/ancestor folder names. mode=fulltext: not implemented (returns implemented:false; do not treat as name search). Optional folder scopes results.",
             input_schema: json!({
                 "type":"object",
                 "required":["query"],
