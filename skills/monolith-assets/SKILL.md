@@ -75,7 +75,8 @@ Global list = catalog only; do not bulk-read every body.
 
 1. 用户指定夹 → `asset_register` 带 `folder`
 2. 未指定夹 → `asset_register` **不传 folder**（进 root）
-3. Inbox：`path` = `~/Downloads/MonolithInbox/….md`，可选 `source_path` URL
+3. **新建文件落盘**：先 `asset_list_tree` 读返回的 `assetsDir`（设置 → 工作目录 → 资产目录，默认 `~/Documents/MonolithAssets`），把新 `.md` 写到该目录下再 `asset_register`。**禁止**自造其它根目录。
+4. Inbox（剪藏/转换）：`path` = `inboxDir`（设置「导入目录」，默认 `~/Downloads/MonolithInbox/….md`），可选 `source_path` URL
 
 ### 安全编辑 / Edit safely
 

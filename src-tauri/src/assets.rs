@@ -744,7 +744,7 @@ pub fn list_assets(conn: &Connection) -> Result<Vec<AssetDto>, String> {
             };
             let source_stale = match source_path.as_deref() {
                 Some(sp)
-                    if !is_http_url(sp)
+                    if should_track_source_stale(sp, path.as_deref())
                         && source_exists
                         && source_mtime.is_some()
                         && source_size.is_some() =>
@@ -791,6 +791,44 @@ pub fn asset_list_tree(db: State<'_, AssetDb>) -> Result<AssetTreeDto, String> {
 pub fn is_http_url(s: &str) -> bool {
     let t = s.trim();
     t.starts_with("http://") || t.starts_with("https://")
+}
+
+fn is_markdown_path(path: &str) -> bool {
+    let lower = path.trim().to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".mdx")
+}
+
+fn paths_refer_same(a: &str, b: &str) -> bool {
+    let na = a.trim().trim_end_matches('/');
+    let nb = b.trim().trim_end_matches('/');
+    if na == nb {
+        return true;
+    }
+    // Best-effort: resolve symlinks / .. when both exist.
+    match (fs::canonicalize(na), fs::canonicalize(nb)) {
+        (Ok(pa), Ok(pb)) => pa == pb,
+        _ => false,
+    }
+}
+
+/// Whether `source_path` can meaningfully go "stale" vs the registered asset body.
+/// MD asset + MD source (or the same file) is not a conversion pair — edits are normal saves.
+pub fn should_track_source_stale(source_path: &str, asset_path: Option<&str>) -> bool {
+    let sp = source_path.trim();
+    if sp.is_empty() || is_http_url(sp) {
+        return false;
+    }
+    if let Some(ap) = asset_path.map(str::trim).filter(|s| !s.is_empty()) {
+        if paths_refer_same(sp, ap) {
+            return false;
+        }
+        if is_markdown_path(sp) && is_markdown_path(ap) {
+            return false;
+        }
+        return true;
+    }
+    // conversion_log: output is MD; MD→MD is not a reconvert pipeline.
+    !is_markdown_path(sp)
 }
 
 /// Register a Monaco-readable file as an asset.
@@ -936,9 +974,14 @@ pub fn asset_delete(db: State<'_, AssetDb>, asset_id: i64) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
-pub fn asset_move(db: State<'_, AssetDb>, asset_id: i64, browse_term_id: i64) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+/// Change folder mount (not mirror). Mount target first, then drop other/source mounts
+/// so a sole-mount asset is never briefly unmounted (which would delete the index).
+pub fn relocate_asset_mount(
+    conn: &Connection,
+    asset_id: i64,
+    to_term_id: i64,
+    from_term_id: Option<i64>,
+) -> Result<(), String> {
     let exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM asset_instance WHERE id = ?1",
@@ -949,8 +992,49 @@ pub fn asset_move(db: State<'_, AssetDb>, asset_id: i64, browse_term_id: i64) ->
     if exists == 0 {
         return Err("Asset not found".into());
     }
-    mount_asset(&conn, asset_id, browse_term_id)?;
+    if !term_is_active(conn, to_term_id)? {
+        return Err(format!("NOT_FOUND: browse_term_id={to_term_id}"));
+    }
+    if let Some(from) = from_term_id {
+        if from == to_term_id {
+            return Ok(());
+        }
+        let in_from: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM asset_term_mount WHERE asset_id = ?1 AND browse_term_id = ?2",
+                params![asset_id, from],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if in_from == 0 {
+            return Err("Asset is not in the source folder".into());
+        }
+        mount_asset(conn, asset_id, to_term_id)?;
+        conn.execute(
+            "DELETE FROM asset_term_mount WHERE asset_id = ?1 AND browse_term_id = ?2",
+            params![asset_id, from],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        mount_asset(conn, asset_id, to_term_id)?;
+        conn.execute(
+            "DELETE FROM asset_term_mount WHERE asset_id = ?1 AND browse_term_id != ?2",
+            params![asset_id, to_term_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub fn asset_move(
+    db: State<'_, AssetDb>,
+    asset_id: i64,
+    browse_term_id: i64,
+    from_browse_term_id: Option<i64>,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    relocate_asset_mount(&conn, asset_id, browse_term_id, from_browse_term_id)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1233,6 +1317,23 @@ pub fn asset_find_by_path(db: State<'_, AssetDb>, path: String) -> Result<Option
     Ok(list_assets(&conn)?.into_iter().find(|a| a.id == id))
 }
 
+/// Global / folder name search for Agent + UI (same rules as MCP `asset_search`).
+#[tauri::command]
+pub fn asset_search_by_name(
+    db: State<'_, AssetDb>,
+    query: String,
+    folder_term_id: Option<i64>,
+    recursive: Option<bool>,
+) -> Result<Vec<AssetDto>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    search_assets_by_name(
+        &conn,
+        &query,
+        folder_term_id,
+        recursive.unwrap_or(false),
+    )
+}
+
 fn next_version_path(current: &Path) -> Result<PathBuf, String> {
     let parent = current
         .parent()
@@ -1472,6 +1573,27 @@ mod tests {
         assert_eq!(file_type_of("/tmp/Dockerfile").unwrap(), "dockerfile");
         assert!(file_type_of("/tmp/noext").is_err());
         assert!(file_type_of("/tmp/x.pdf").is_err());
+    }
+
+    #[test]
+    fn md_source_for_md_asset_is_not_tracked_for_stale() {
+        assert!(!should_track_source_stale(
+            "/repo/skills/monolith-assets/SKILL.md",
+            Some("/Users/me/Documents/MonolithAssets/monolith-assets-SKILL.md"),
+        ));
+        assert!(!should_track_source_stale(
+            "/same/file.md",
+            Some("/same/file.md"),
+        ));
+        assert!(should_track_source_stale(
+            "/inbox/report.docx",
+            Some("/assets/report.md"),
+        ));
+        assert!(should_track_source_stale(
+            "/inbox/report.pdf",
+            Some("/assets/report.md"),
+        ));
+        assert!(!should_track_source_stale("https://example.com/x", Some("/a.md")));
     }
 
     #[test]
@@ -2040,6 +2162,34 @@ mod tests {
         assert!(removed2 && gone2);
         assert!(list_assets(&conn).unwrap().is_empty());
         assert!(path.is_file());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(path.parent().unwrap());
+    }
+
+    #[test]
+    fn relocate_asset_mount_changes_folder_not_mirror() {
+        let path = write_temp("move-me.md", "x");
+        let abs = path.to_string_lossy().into_owned();
+        let conn = open_mem();
+        let root = root_id(&conn).unwrap();
+        let created = create_from_path_conn(&conn, &abs, None, None, Some(root)).unwrap();
+        let a = ensure_child_term(&conn, root, "a").unwrap();
+        let b = ensure_child_term(&conn, root, "b").unwrap();
+        relocate_asset_mount(&conn, created.id, a.id, Some(root)).unwrap();
+        let rows = list_assets(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].browse_term_id, a.id);
+        relocate_asset_mount(&conn, created.id, b.id, Some(a.id)).unwrap();
+        let rows = list_assets(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].browse_term_id, b.id);
+        // No from → sole folder becomes target (clears any extras).
+        assert!(mount_asset(&conn, created.id, a.id).unwrap());
+        assert_eq!(list_assets(&conn).unwrap().len(), 2);
+        relocate_asset_mount(&conn, created.id, root, None).unwrap();
+        let rows = list_assets(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].browse_term_id, root);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(path.parent().unwrap());
     }

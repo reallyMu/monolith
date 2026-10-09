@@ -76,8 +76,17 @@ export function assetDelete(assetId: number): Promise<void> {
   return invoke("asset_delete", { assetId });
 }
 
-export function assetMove(assetId: number, browseTermId: number): Promise<void> {
-  return invoke("asset_move", { assetId, browseTermId });
+/** Move asset into `browseTermId` (change folder). Pass `fromBrowseTermId` when dragging a tree row. */
+export function assetMove(
+  assetId: number,
+  browseTermId: number,
+  fromBrowseTermId?: number,
+): Promise<void> {
+  return invoke("asset_move", {
+    assetId,
+    browseTermId,
+    fromBrowseTermId: fromBrowseTermId ?? null,
+  });
 }
 
 export function assetUnmount(
@@ -113,6 +122,18 @@ export function assetRelocate(assetId: number, newPath: string): Promise<AssetDt
 
 export function assetFindByPath(path: string): Promise<AssetDto | null> {
   return invoke("asset_find_by_path", { path });
+}
+
+/** Name search (MCP `asset_search` mode=name). */
+export function assetSearchByName(
+  query: string,
+  opts?: { folderTermId?: number | null; recursive?: boolean },
+): Promise<AssetDto[]> {
+  return invoke("asset_search_by_name", {
+    query,
+    folderTermId: opts?.folderTermId ?? null,
+    recursive: opts?.recursive ?? false,
+  });
 }
 
 export function assetSaveNewVersion(assetId: number, content: string): Promise<AssetDto> {

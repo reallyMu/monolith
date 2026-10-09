@@ -10,6 +10,7 @@ import TreePreview from "./components/TreePreview.vue";
 import AssetBrowser from "./components/AssetBrowser.vue";
 import ConvertModal from "./components/ConvertModal.vue";
 import FormulaEditorModal from "./components/FormulaEditorModal.vue";
+import AgentFloat from "./components/AgentFloat.vue";
 import ToolbarIcon from "./components/ToolbarIcon.vue";
 import {
   findMathAtOffset,
@@ -57,11 +58,34 @@ import {
   type McpSkillView,
 } from "./utils/clipperApi";
 import {
+  emptySettings,
   settingsGet,
   settingsSave,
+  type AgentMcpServer,
+  type AgentSkillEntry,
   type AppSettings,
+  type LlmEndpoint,
+  type RagStore,
   type SettingsView,
 } from "./utils/settingsApi";
+import {
+  agentBridgeStart,
+  agentBridgeStatus,
+  agentBridgeStop,
+  testLlmConnection,
+  testRagConnection,
+  type BridgeStatus,
+} from "./utils/agentApi";
+import {
+  RAG_ENGINES,
+  composeRagEndpoint,
+  defaultConnParts,
+  parseRagEndpoint,
+  patchRagStoreEndpoint,
+  ragEngineMeta,
+  type RagConnParts,
+  type RagEngineId,
+} from "./utils/ragEngines";
 import {
   convertCancel,
   convertDefaultOutput,
@@ -1525,7 +1549,7 @@ const mcpDiscovered = ref<DiscoveredAgent[]>([]);
 /** Selected installable agent ids */
 const mcpSelected = ref<Record<string, boolean>>({});
 
-type SettingsTab = "dirs" | "clipper" | "mcp" | "skill" | "shortcuts" | "about";
+type SettingsTab = "dirs" | "llm" | "rag" | "mcp" | "skill" | "shortcuts" | "about";
 
 const shortcutRows = computed(() => [
   { keys: "⌘S", action: t("save"), note: "" },
@@ -1624,19 +1648,85 @@ const settingsOpen = ref(false);
 const settingsBusy = ref(false);
 const settingsTab = ref<SettingsTab>("dirs");
 const settingsView = ref<SettingsView | null>(null);
-const settingsDraft = ref<AppSettings>({
-  inboxDir: "",
-  defaultOpenDir: "",
-  defaultSaveDir: "",
-});
+const settingsDraft = ref<AppSettings>(emptySettings());
 const skillView = ref<McpSkillView | null>(null);
 const skillBusy = ref(false);
+const bridgeStatus = ref<BridgeStatus | null>(null);
+const bridgeBusy = ref(false);
+
+async function refreshBridgeStatus() {
+  try {
+    bridgeStatus.value = await agentBridgeStatus();
+  } catch (e) {
+    bridgeStatus.value = null;
+    statusError.value = String(e);
+  }
+}
+
+async function startBridgeFromSettings() {
+  bridgeBusy.value = true;
+  try {
+    await saveSettingsQuiet();
+    bridgeStatus.value = await agentBridgeStart();
+  } catch (e) {
+    statusError.value = String(e);
+    await refreshBridgeStatus();
+  } finally {
+    bridgeBusy.value = false;
+  }
+}
+
+async function stopBridgeFromSettings() {
+  bridgeBusy.value = true;
+  try {
+    bridgeStatus.value = await agentBridgeStop();
+  } catch (e) {
+    statusError.value = String(e);
+  } finally {
+    bridgeBusy.value = false;
+  }
+}
+
+/** Persist draft without closing settings (for Bridge sync before start). */
+async function saveSettingsQuiet() {
+  settingsBusy.value = true;
+  try {
+    const view = await settingsSave(settingsDraft.value);
+    settingsView.value = view;
+    settingsDraft.value = {
+      ...emptySettings(),
+      ...view.settings,
+      llms: Array.isArray(view.settings.llms) ? view.settings.llms.map((l) => ({ ...l })) : [],
+      ragStores: Array.isArray(view.settings.ragStores)
+        ? view.settings.ragStores.map((r) => ({ ...r }))
+        : [],
+      agentMcpServers: Array.isArray(view.settings.agentMcpServers)
+        ? view.settings.agentMcpServers.map((m) => ({ ...m }))
+        : [],
+      agentSkills: Array.isArray(view.settings.agentSkills)
+        ? view.settings.agentSkills.map((sk) => ({ ...sk }))
+        : [],
+    };
+  } finally {
+    settingsBusy.value = false;
+  }
+}
 
 async function loadSettings() {
   try {
     const view = await settingsGet();
     settingsView.value = view;
-    settingsDraft.value = { ...view.settings };
+    const s = view.settings;
+    settingsDraft.value = {
+      ...emptySettings(),
+      ...s,
+      llms: Array.isArray(s.llms) ? s.llms.map((l) => ({ ...l })) : [],
+      ragStores: Array.isArray(s.ragStores) ? s.ragStores.map((r) => ({ ...r })) : [],
+      agentMcpServers: Array.isArray(s.agentMcpServers)
+        ? s.agentMcpServers.map((m) => ({ ...m }))
+        : [],
+      agentSkills: Array.isArray(s.agentSkills) ? s.agentSkills.map((sk) => ({ ...sk })) : [],
+    };
   } catch (e) {
     statusError.value = String(e);
   }
@@ -1659,7 +1749,7 @@ async function openSystemSettings() {
   settingsTab.value = "dirs";
   settingsBusy.value = true;
   try {
-    await Promise.all([loadSettings(), refreshMcpAgents(), loadSkill()]);
+    await Promise.all([loadSettings(), refreshMcpAgents(), loadSkill(), refreshBridgeStatus()]);
   } finally {
     settingsBusy.value = false;
   }
@@ -1695,7 +1785,9 @@ async function reloadSkill() {
   }
 }
 
-async function pickSettingsDir(field: keyof AppSettings) {
+async function pickSettingsDir(
+  field: "inboxDir" | "assetsDir" | "defaultOpenDir" | "defaultSaveDir",
+) {
   const selected = await open({
     multiple: false,
     directory: true,
@@ -1706,13 +1798,272 @@ async function pickSettingsDir(field: keyof AppSettings) {
   }
 }
 
-function resetInboxDefault() {
+async function pickSkillPath(sk: AgentSkillEntry) {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    defaultPath: sk.path || settingsView.value?.skillsDir || undefined,
+    filters: [{ name: "SKILL.md", extensions: ["md"] }],
+  });
+  if (typeof selected === "string") {
+    sk.path = selected;
+    if (!sk.name.trim() || sk.name === "skill") {
+      const parts = selected.split(/[/\\]/);
+      const folder = parts.length >= 2 ? parts[parts.length - 2] : "";
+      if (folder) sk.name = folder;
+    }
+    if (sk.source === "builtin") sk.source = "local";
+  }
+}
+
+function addAgentSkill() {
+  const row: AgentSkillEntry = {
+    id: newId("skill"),
+    name: "",
+    source: "local",
+    path: "",
+    remoteUrl: "",
+    enabled: true,
+  };
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    agentSkills: [...(settingsDraft.value.agentSkills ?? []), row],
+  };
+}
+
+function removeAgentSkill(id: string) {
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    agentSkills: (settingsDraft.value.agentSkills ?? []).filter((s) => s.id !== id),
+  };
+}
+
+function addAgentMcp() {
+  const row: AgentMcpServer = {
+    id: newId("mcp"),
+    name: "",
+    command: "",
+    args: [],
+    enabled: true,
+  };
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    agentMcpServers: [...(settingsDraft.value.agentMcpServers ?? []), row],
+  };
+}
+
+function removeAgentMcp(id: string) {
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    agentMcpServers: (settingsDraft.value.agentMcpServers ?? []).filter((m) => m.id !== id),
+  };
+}
+
+function newId(prefix: string) {
+  return `${prefix}-${Date.now().toString(36)}`;
+}
+
+function addLlm(preset?: "blank" | "omlx" | "ollama") {
+  const kind = preset ?? "blank";
+  const row: LlmEndpoint =
+    kind === "omlx"
+      ? {
+          id: newId("llm"),
+          name: "oMLX (local)",
+          baseUrl: "http://127.0.0.1:8000/v1",
+          apiKey: "",
+          model: "",
+          role: "both",
+          enabled: true,
+        }
+      : kind === "ollama"
+        ? {
+            id: newId("llm"),
+            name: "Ollama (local)",
+            baseUrl: "http://127.0.0.1:11434/v1",
+            apiKey: "",
+            model: "",
+            role: "both",
+            enabled: true,
+          }
+        : {
+            id: newId("llm"),
+            name: "",
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "",
+            model: "",
+            role: "chat",
+            enabled: true,
+          };
+  const llms = [...(settingsDraft.value.llms ?? []), row];
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    llms,
+    activeChatLlmId: settingsDraft.value.activeChatLlmId || row.id,
+  };
+}
+
+function removeLlm(id: string) {
+  const llms = settingsDraft.value.llms.filter((l) => l.id !== id);
+  const nextChat =
+    settingsDraft.value.activeChatLlmId === id ? llms[0]?.id ?? "" : settingsDraft.value.activeChatLlmId;
+  const nextEmbed =
+    settingsDraft.value.activeEmbedLlmId === id ? llms[0]?.id ?? "" : settingsDraft.value.activeEmbedLlmId;
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    llms,
+    activeChatLlmId: nextChat,
+    activeEmbedLlmId: nextEmbed,
+  };
+}
+
+const ragAddOpen = ref(false);
+const ragAddKind = ref<RagEngineId>("qdrant");
+const ragAddName = ref("");
+const ragAddParts = ref<RagConnParts>(defaultConnParts("qdrant"));
+const ragAddTopK = ref(5);
+
+function ragAddMeta() {
+  return ragEngineMeta(ragAddKind.value);
+}
+
+function openRagAdd() {
+  ragAddKind.value = "qdrant";
+  ragAddName.value = "";
+  ragAddParts.value = defaultConnParts("qdrant");
+  ragAddTopK.value = 5;
+  ragAddOpen.value = true;
+}
+
+function onRagAddKindChange() {
+  ragAddParts.value = defaultConnParts(ragAddKind.value);
+}
+
+function confirmAddRagStore() {
+  const meta = ragAddMeta();
+  const kind = meta.id;
+  let endpoint: string;
+  let apiKey: string;
+  try {
+    ({ endpoint, apiKey } = composeRagEndpoint(kind, ragAddParts.value));
+  } catch (e) {
+    statusError.value = String(e);
+    return;
+  }
+  const dup = (settingsDraft.value.ragStores ?? []).some(
+    (r) => r.kind === kind && r.endpoint.trim() === endpoint,
+  );
+  if (dup) {
+    statusError.value = t("settingsRagDup");
+    return;
+  }
+  const row: RagStore = {
+    id: newId("rag"),
+    name: ragAddName.value.trim() || meta.label,
+    kind,
+    endpoint,
+    apiKey,
+    queryMode: meta.defaultQueryMode,
+    enabled: true,
+    topK: Math.min(50, Math.max(1, Number(ragAddTopK.value) || 5)),
+  };
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    ragStores: [...(settingsDraft.value.ragStores ?? []), row],
+  };
+  ragAddOpen.value = false;
+}
+
+function ragPartsOf(r: RagStore): RagConnParts {
+  try {
+    return parseRagEndpoint(r.kind, r.endpoint, r.apiKey);
+  } catch (e) {
+    statusError.value = String(e);
+    return defaultConnParts(r.kind);
+  }
+}
+
+function patchRagParts(r: RagStore, patch: Partial<RagConnParts>) {
+  try {
+    const next = patchRagStoreEndpoint(r.kind, r.endpoint, r.apiKey, patch);
+    r.endpoint = next.endpoint;
+    r.apiKey = next.apiKey;
+  } catch (e) {
+    statusError.value = String(e);
+  }
+}
+
+function onRagKindChange(r: RagStore) {
+  const meta = ragEngineMeta(r.kind);
+  const composed = composeRagEndpoint(r.kind, defaultConnParts(r.kind));
+  r.endpoint = composed.endpoint;
+  r.apiKey = composed.apiKey;
+  r.queryMode = meta.defaultQueryMode;
+}
+
+function removeRagStore(id: string) {
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    ragStores: settingsDraft.value.ragStores.filter((r) => r.id !== id),
+  };
+  delete endpointTestMsg.value[`rag:${id}`];
+}
+
+/** Per-endpoint smoke-test status (Cursor / Continue style). */
+const endpointTestMsg = ref<Record<string, string>>({});
+const endpointTestBusy = ref<Record<string, boolean>>({});
+
+async function runLlmTest(l: LlmEndpoint) {
+  const key = `llm:${l.id}`;
+  endpointTestBusy.value = { ...endpointTestBusy.value, [key]: true };
+  endpointTestMsg.value = { ...endpointTestMsg.value, [key]: "…" };
+  try {
+    const msg = await testLlmConnection(l);
+    endpointTestMsg.value = { ...endpointTestMsg.value, [key]: msg };
+  } catch (e) {
+    endpointTestMsg.value = { ...endpointTestMsg.value, [key]: String(e) };
+  } finally {
+    endpointTestBusy.value = { ...endpointTestBusy.value, [key]: false };
+  }
+}
+
+async function runRagTest(r: RagStore) {
+  const key = `rag:${r.id}`;
+  endpointTestBusy.value = { ...endpointTestBusy.value, [key]: true };
+  endpointTestMsg.value = { ...endpointTestMsg.value, [key]: "…" };
+  try {
+    // Persist draft first so Rust retrieve sees current endpoint.
+    await settingsSave({ ...settingsDraft.value });
+    const msg = await testRagConnection(r.id);
+    endpointTestMsg.value = { ...endpointTestMsg.value, [key]: msg };
+  } catch (e) {
+    endpointTestMsg.value = { ...endpointTestMsg.value, [key]: String(e) };
+  } finally {
+    endpointTestBusy.value = { ...endpointTestBusy.value, [key]: false };
+  }
+}
+
+function homePrefixFromSettings(): string | null {
   const db = settingsView.value?.assetsDbPath || settingsDraft.value.inboxDir || "";
-  const m = db.match(/^(\/Users\/[^/]+)\//);
-  if (m) {
+  return db.match(/^(\/Users\/[^/]+)\//)?.[1] ?? null;
+}
+
+function resetInboxDefault() {
+  const home = homePrefixFromSettings();
+  if (home) {
     settingsDraft.value = {
       ...settingsDraft.value,
-      inboxDir: `${m[1]}/Downloads/MonolithInbox`,
+      inboxDir: `${home}/Downloads/MonolithInbox`,
+    };
+  }
+}
+
+function resetAssetsDefault() {
+  const home = homePrefixFromSettings();
+  if (home) {
+    settingsDraft.value = {
+      ...settingsDraft.value,
+      assetsDir: `${home}/Documents/MonolithAssets`,
     };
   }
 }
@@ -2027,6 +2378,7 @@ watch(
       @close="closeFormulaEditor"
       @confirm="onFormulaConfirm"
     />
+    <AgentFloat />
 
     <ConvertModal
       :open="convertOpen"
@@ -2109,6 +2461,14 @@ watch(
           </div>
           <div class="inbox-head-actions">
             <span class="inbox-count">{{ t("inboxCount", { shown: inboxVisible.length, total: inboxEntries.length }) }}</span>
+            <button
+              type="button"
+              class="inbox-ghost"
+              :title="t('installClipperTitle')"
+              @click="installWebClipper"
+            >
+              {{ t("installClipper") }}
+            </button>
             <button type="button" class="inbox-ghost" :disabled="inboxBusy" @click="refreshInbox">
               {{ t("inboxRefresh") }}
             </button>
@@ -2251,10 +2611,17 @@ watch(
             </button>
             <button
               type="button"
-              :class="{ active: settingsTab === 'clipper' }"
-              @click="settingsTab = 'clipper'"
+              :class="{ active: settingsTab === 'llm' }"
+              @click="settingsTab = 'llm'"
             >
-              {{ t("settingsTabClipper") }}
+              {{ t("settingsTabLlm") }}
+            </button>
+            <button
+              type="button"
+              :class="{ active: settingsTab === 'rag' }"
+              @click="settingsTab = 'rag'"
+            >
+              {{ t("settingsTabRag") }}
             </button>
             <button
               type="button"
@@ -2292,14 +2659,16 @@ watch(
                 <p class="settings-lead">{{ t("settingsDirsHint") }}</p>
                 <label class="settings-field">
                   <span>{{ t("bgEditTitle") }}</span>
-                  <div class="settings-row">
-                    <input type="color" :value="editBg" :disabled="settingsBusy" @input="onEditBg" />
+                  <div class="color-field">
+                    <input type="color" :value="editBg" :disabled="settingsBusy" :title="t('bgEditTitle')" @input="onEditBg" />
+                    <span class="color-hex">{{ editBg }}</span>
                   </div>
                 </label>
                 <label class="settings-field">
                   <span>{{ t("bgPreviewTitle") }}</span>
-                  <div class="settings-row">
-                    <input type="color" :value="previewBg" :disabled="settingsBusy" @input="onPreviewBg" />
+                  <div class="color-field">
+                    <input type="color" :value="previewBg" :disabled="settingsBusy" :title="t('bgPreviewTitle')" @input="onPreviewBg" />
+                    <span class="color-hex">{{ previewBg }}</span>
                   </div>
                 </label>
                 <label class="settings-field">
@@ -2312,6 +2681,19 @@ watch(
                     </button>
                     <button type="button" :disabled="settingsBusy" @click="resetInboxDefault">
                       {{ t("settingsResetInbox") }}
+                    </button>
+                  </div>
+                </label>
+                <label class="settings-field">
+                  <span>{{ t("settingsAssetsDir") }}</span>
+                  <p class="settings-lead">{{ t("settingsAssetsHint") }}</p>
+                  <div class="settings-row">
+                    <input v-model="settingsDraft.assetsDir" type="text" :disabled="settingsBusy" />
+                    <button type="button" :disabled="settingsBusy" @click="pickSettingsDir('assetsDir')">
+                      {{ t("settingsBrowse") }}
+                    </button>
+                    <button type="button" :disabled="settingsBusy" @click="resetAssetsDefault">
+                      {{ t("settingsResetAssets") }}
                     </button>
                   </div>
                 </label>
@@ -2347,6 +2729,148 @@ watch(
                   <button
                     type="button"
                     class="register-primary"
+                    :disabled="
+                      settingsBusy ||
+                      !settingsDraft.inboxDir.trim() ||
+                      !settingsDraft.assetsDir.trim()
+                    "
+                    @click="saveSystemSettings"
+                  >
+                    {{ t("settingsSave") }}
+                  </button>
+                </div>
+              </section>
+
+              <section v-show="settingsTab === 'llm'" class="settings-panel">
+                <p class="settings-lead">{{ t("settingsLlmHint") }}</p>
+                <div class="settings-card">
+                  <h3 class="settings-subhead">{{ t("settingsBridgeTitle") }}</h3>
+                  <p class="settings-lead">{{ t("settingsBridgeHint") }}</p>
+                  <p class="settings-lead">
+                    {{ t("settingsBridgeStatus") }}:
+                    <strong>
+                      {{
+                        bridgeStatus?.up ? t("settingsBridgeUp") : t("settingsBridgeDown")
+                      }}
+                    </strong>
+                    · {{ t("settingsBridgePort") }}:
+                    {{ bridgeStatus?.port ?? settingsDraft.agentBridgePort ?? 8096 }}
+                    · {{ t("settingsBridgeNode") }}:
+                    {{
+                      bridgeStatus?.nodeOk
+                        ? bridgeStatus.nodeVersion || "ok"
+                        : bridgeStatus?.nodeError || "—"
+                    }}
+                  </p>
+                  <p v-if="bridgeStatus?.hint" class="settings-lead">{{ bridgeStatus.hint }}</p>
+                  <div class="settings-row settings-llm-actions">
+                    <button
+                      type="button"
+                      class="settings-btn-secondary"
+                      :disabled="bridgeBusy || settingsBusy"
+                      @click="refreshBridgeStatus"
+                    >
+                      {{ t("settingsBridgeRefresh") }}
+                    </button>
+                    <button
+                      type="button"
+                      class="register-primary"
+                      :disabled="bridgeBusy || settingsBusy"
+                      @click="startBridgeFromSettings"
+                    >
+                      {{ t("settingsBridgeStart") }}
+                    </button>
+                    <button type="button" :disabled="bridgeBusy || settingsBusy" @click="stopBridgeFromSettings">
+                      {{ t("settingsBridgeStop") }}
+                    </button>
+                  </div>
+                </div>
+                <label class="settings-field">
+                  <span>{{ t("settingsActiveChatLlm") }}</span>
+                  <select v-model="settingsDraft.activeChatLlmId" :disabled="settingsBusy">
+                    <option v-for="l in settingsDraft.llms" :key="l.id" :value="l.id">
+                      {{ l.name || l.id }} ({{ l.baseUrl }})
+                    </option>
+                  </select>
+                </label>
+                <label class="settings-field">
+                  <span>{{ t("settingsActiveEmbedLlm") }}</span>
+                  <select v-model="settingsDraft.activeEmbedLlmId" :disabled="settingsBusy">
+                    <option v-for="l in settingsDraft.llms" :key="'e-' + l.id" :value="l.id">
+                      {{ l.name || l.id }}
+                    </option>
+                  </select>
+                </label>
+                <p v-if="!settingsDraft.llms.length" class="settings-lead">{{ t("settingsLlmEmpty") }}</p>
+                <div v-for="l in settingsDraft.llms" :key="l.id" class="settings-card">
+                  <div class="settings-row">
+                    <input v-model="l.name" type="text" :disabled="settingsBusy" :placeholder="t('settingsLlmName')" />
+                    <label class="settings-check">
+                      <input v-model="l.enabled" type="checkbox" :disabled="settingsBusy" />
+                      {{ t("settingsEnabled") }}
+                    </label>
+                    <button type="button" :disabled="settingsBusy" @click="removeLlm(l.id)">{{ t("settingsRemove") }}</button>
+                  </div>
+                  <label class="settings-field settings-field--tight">
+                    <span>{{ t("settingsLlmBaseUrl") }}</span>
+                    <input
+                      v-model="l.baseUrl"
+                      type="text"
+                      :disabled="settingsBusy"
+                      :placeholder="t('settingsLlmBaseUrlHint')"
+                    />
+                  </label>
+                  <label class="settings-field settings-field--tight">
+                    <span>{{ t("settingsApiKey") }}</span>
+                    <input v-model="l.apiKey" type="password" :disabled="settingsBusy" autocomplete="off" />
+                  </label>
+                  <div class="settings-row">
+                    <label class="settings-field settings-field--tight settings-field--grow">
+                      <span>{{ t("settingsModel") }}</span>
+                      <input v-model="l.model" type="text" :disabled="settingsBusy" />
+                    </label>
+                    <label class="settings-field settings-field--tight">
+                      <span>{{ t("settingsLlmRole") }}</span>
+                      <select v-model="l.role" :disabled="settingsBusy">
+                        <option value="chat">chat</option>
+                        <option value="embed">embed</option>
+                        <option value="both">both</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="settings-row settings-test-row">
+                    <button
+                      type="button"
+                      :disabled="settingsBusy || endpointTestBusy[`llm:${l.id}`] || !l.baseUrl.trim()"
+                      @click="runLlmTest(l)"
+                    >
+                      {{ endpointTestBusy[`llm:${l.id}`] ? "…" : t("settingsTestConnection") }}
+                    </button>
+                    <span
+                      class="settings-test-msg"
+                      :class="{
+                        'settings-test-msg--ok': endpointTestMsg[`llm:${l.id}`]?.startsWith('ok'),
+                        'settings-test-msg--err':
+                          endpointTestMsg[`llm:${l.id}`] && !endpointTestMsg[`llm:${l.id}`].startsWith('ok') && endpointTestMsg[`llm:${l.id}`] !== '…',
+                      }"
+                    >{{ endpointTestMsg[`llm:${l.id}`] || "" }}</span>
+                  </div>
+                </div>
+                <div class="settings-row settings-llm-actions">
+                  <button type="button" class="settings-btn-secondary" :disabled="settingsBusy" @click="addLlm('blank')">
+                    {{ t("settingsAddLlm") }}
+                  </button>
+                  <button type="button" class="settings-btn-ghost" :disabled="settingsBusy" @click="addLlm('omlx')">
+                    {{ t("settingsAddLlmOmlx") }}
+                  </button>
+                  <button type="button" class="settings-btn-ghost" :disabled="settingsBusy" @click="addLlm('ollama')">
+                    {{ t("settingsAddLlmOllama") }}
+                  </button>
+                </div>
+                <div class="settings-pane-actions">
+                  <button
+                    type="button"
+                    class="register-primary"
                     :disabled="settingsBusy || !settingsDraft.inboxDir.trim()"
                     @click="saveSystemSettings"
                   >
@@ -2355,23 +2879,339 @@ watch(
                 </div>
               </section>
 
-              <section v-show="settingsTab === 'clipper'" class="settings-panel">
-                <p class="settings-lead">{{ t("settingsClipperHint") }}</p>
-                <dl v-if="settingsView" class="settings-readonly">
-                  <div>
-                    <dt>{{ t("settingsClipperDir") }}</dt>
-                    <dd>{{ settingsView.clipperReleaseDir }}</dd>
+              <section v-show="settingsTab === 'rag'" class="settings-panel">
+                <p class="settings-lead">{{ t("settingsRagHint") }}</p>
+                <label class="settings-field">
+                  <span>{{ t("settingsActiveEmbedLlm") }}</span>
+                  <select v-model="settingsDraft.activeEmbedLlmId" :disabled="settingsBusy">
+                    <option v-for="l in settingsDraft.llms" :key="'rag-e-' + l.id" :value="l.id">
+                      {{ l.name || l.id }}
+                    </option>
+                  </select>
+                  <span class="settings-muted">{{ t("settingsRagEmbedHint") }}</span>
+                </label>
+                <p v-if="!settingsDraft.ragStores.length" class="settings-lead">{{ t("settingsRagEmpty") }}</p>
+                <div v-for="r in settingsDraft.ragStores" :key="r.id" class="settings-card">
+                  <div class="settings-row">
+                    <label class="settings-field settings-field--tight settings-field--grow">
+                      <span>{{ t("settingsRagName") }}</span>
+                      <input v-model="r.name" type="text" :disabled="settingsBusy" :placeholder="t('settingsRagName')" />
+                    </label>
+                    <label class="settings-field settings-field--tight">
+                      <span>{{ t("settingsRagEngine") }}</span>
+                      <select
+                        v-model="r.kind"
+                        :disabled="settingsBusy"
+                        class="settings-kind-select"
+                        @change="onRagKindChange(r)"
+                      >
+                        <option v-for="e in RAG_ENGINES" :key="e.id" :value="e.id">{{ e.label }}</option>
+                      </select>
+                    </label>
+                    <label class="settings-check">
+                      <input v-model="r.enabled" type="checkbox" :disabled="settingsBusy" />
+                      {{ t("settingsEnabled") }}
+                    </label>
+                    <button type="button" class="settings-btn-ghost" :disabled="settingsBusy" @click="removeRagStore(r.id)">
+                      {{ t("settingsRemove") }}
+                    </button>
                   </div>
-                </dl>
+                  <p class="settings-muted">{{ ragEngineMeta(r.kind).blurb }}</p>
+                  <div v-if="ragEngineMeta(r.kind).formMode === 'path'" class="settings-row">
+                    <label class="settings-field settings-field--tight settings-field--grow">
+                      <span>{{ t("settingsRagPath") }}</span>
+                      <input
+                        :value="ragPartsOf(r).path"
+                        type="text"
+                        :disabled="settingsBusy"
+                        :placeholder="t('settingsRagPathHint')"
+                        @input="patchRagParts(r, { path: ($event.target as HTMLInputElement).value })"
+                      />
+                    </label>
+                  </div>
+                  <template v-else>
+                    <div class="settings-row">
+                      <label class="settings-field settings-field--tight settings-field--grow">
+                        <span>{{ t("settingsRagHost") }}</span>
+                        <input
+                          :value="ragPartsOf(r).host"
+                          type="text"
+                          :disabled="settingsBusy"
+                          placeholder="127.0.0.1"
+                          @input="patchRagParts(r, { host: ($event.target as HTMLInputElement).value })"
+                        />
+                      </label>
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagPort") }}</span>
+                        <input
+                          :value="ragPartsOf(r).port"
+                          type="text"
+                          inputmode="numeric"
+                          :disabled="settingsBusy"
+                          :placeholder="String(ragEngineMeta(r.kind).defaultPort)"
+                          @input="patchRagParts(r, { port: ($event.target as HTMLInputElement).value })"
+                        />
+                      </label>
+                    </div>
+                    <div v-if="r.kind === 'http'" class="settings-row">
+                      <label class="settings-field settings-field--tight settings-field--grow">
+                        <span>{{ t("settingsRagHttpPath") }}</span>
+                        <input
+                          :value="ragPartsOf(r).path"
+                          type="text"
+                          :disabled="settingsBusy"
+                          placeholder="/search"
+                          @input="patchRagParts(r, { path: ($event.target as HTMLInputElement).value })"
+                        />
+                      </label>
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagQueryMode") }}</span>
+                        <select v-model="r.queryMode" :disabled="settingsBusy">
+                          <option value="text">text</option>
+                          <option value="vector">vector</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div v-if="ragEngineMeta(r.kind).usesPgAuth" class="settings-row">
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagUser") }}</span>
+                        <input
+                          :value="ragPartsOf(r).username"
+                          type="text"
+                          :disabled="settingsBusy"
+                          @input="patchRagParts(r, { username: ($event.target as HTMLInputElement).value })"
+                        />
+                      </label>
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagPassword") }}</span>
+                        <input
+                          :value="ragPartsOf(r).password"
+                          type="password"
+                          :disabled="settingsBusy"
+                          autocomplete="off"
+                          @input="patchRagParts(r, { password: ($event.target as HTMLInputElement).value })"
+                        />
+                      </label>
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagDatabase") }}</span>
+                        <input
+                          :value="ragPartsOf(r).database"
+                          type="text"
+                          :disabled="settingsBusy"
+                          @input="patchRagParts(r, { database: ($event.target as HTMLInputElement).value })"
+                        />
+                      </label>
+                    </div>
+                    <div v-if="ragEngineMeta(r.kind).usesApiKey" class="settings-row">
+                      <label class="settings-field settings-field--tight settings-field--grow">
+                        <span>{{ t("settingsApiKey") }}（{{ t("settingsOptional") }}）</span>
+                        <input
+                          :value="ragPartsOf(r).password"
+                          type="password"
+                          :disabled="settingsBusy"
+                          autocomplete="off"
+                          @input="patchRagParts(r, { password: ($event.target as HTMLInputElement).value })"
+                        />
+                      </label>
+                    </div>
+                  </template>
+                  <div class="settings-row">
+                    <label class="settings-field settings-field--tight">
+                      <span>topK</span>
+                      <input v-model.number="r.topK" type="number" min="1" max="50" :disabled="settingsBusy" />
+                    </label>
+                  </div>
+                  <div class="settings-row settings-test-row">
+                    <button
+                      type="button"
+                      class="settings-btn-secondary"
+                      :disabled="settingsBusy || endpointTestBusy[`rag:${r.id}`] || !r.endpoint.trim()"
+                      @click="runRagTest(r)"
+                    >
+                      {{ endpointTestBusy[`rag:${r.id}`] ? "…" : t("settingsTestConnection") }}
+                    </button>
+                    <span
+                      class="settings-test-msg"
+                      :class="{
+                        'settings-test-msg--ok': endpointTestMsg[`rag:${r.id}`]?.startsWith('ok'),
+                        'settings-test-msg--err':
+                          endpointTestMsg[`rag:${r.id}`] && !endpointTestMsg[`rag:${r.id}`].startsWith('ok') && endpointTestMsg[`rag:${r.id}`] !== '…',
+                      }"
+                    >{{ endpointTestMsg[`rag:${r.id}`] || "" }}</span>
+                  </div>
+                </div>
+
+                <div v-if="ragAddOpen" class="settings-card settings-card--add">
+                  <p class="settings-lead">{{ t("settingsAddRag") }}</p>
+                  <div class="settings-row">
+                    <label class="settings-field settings-field--tight settings-field--grow">
+                      <span>{{ t("settingsRagName") }}</span>
+                      <input v-model="ragAddName" type="text" :disabled="settingsBusy" :placeholder="ragAddMeta().label" />
+                    </label>
+                    <label class="settings-field settings-field--tight">
+                      <span>{{ t("settingsRagEngine") }}</span>
+                      <select v-model="ragAddKind" :disabled="settingsBusy" @change="onRagAddKindChange">
+                        <option v-for="e in RAG_ENGINES" :key="e.id" :value="e.id">{{ e.label }}</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p class="settings-muted">{{ ragAddMeta().blurb }}</p>
+                  <div v-if="ragAddMeta().formMode === 'path'" class="settings-row">
+                    <label class="settings-field settings-field--tight settings-field--grow">
+                      <span>{{ t("settingsRagPath") }}</span>
+                      <input v-model="ragAddParts.path" type="text" :disabled="settingsBusy" :placeholder="t('settingsRagPathHint')" />
+                    </label>
+                  </div>
+                  <template v-else>
+                    <div class="settings-row">
+                      <label class="settings-field settings-field--tight settings-field--grow">
+                        <span>{{ t("settingsRagHost") }}</span>
+                        <input v-model="ragAddParts.host" type="text" :disabled="settingsBusy" placeholder="127.0.0.1" />
+                      </label>
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagPort") }}</span>
+                        <input
+                          v-model="ragAddParts.port"
+                          type="text"
+                          inputmode="numeric"
+                          :disabled="settingsBusy"
+                          :placeholder="String(ragAddMeta().defaultPort)"
+                        />
+                      </label>
+                    </div>
+                    <div v-if="ragAddKind === 'http'" class="settings-row">
+                      <label class="settings-field settings-field--tight settings-field--grow">
+                        <span>{{ t("settingsRagHttpPath") }}</span>
+                        <input v-model="ragAddParts.path" type="text" :disabled="settingsBusy" placeholder="/search" />
+                      </label>
+                    </div>
+                    <div v-if="ragAddMeta().usesPgAuth" class="settings-row">
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagUser") }}</span>
+                        <input v-model="ragAddParts.username" type="text" :disabled="settingsBusy" />
+                      </label>
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagPassword") }}</span>
+                        <input v-model="ragAddParts.password" type="password" :disabled="settingsBusy" autocomplete="off" />
+                      </label>
+                      <label class="settings-field settings-field--tight">
+                        <span>{{ t("settingsRagDatabase") }}</span>
+                        <input v-model="ragAddParts.database" type="text" :disabled="settingsBusy" />
+                      </label>
+                    </div>
+                    <div v-if="ragAddMeta().usesApiKey" class="settings-row">
+                      <label class="settings-field settings-field--tight settings-field--grow">
+                        <span>{{ t("settingsApiKey") }}（{{ t("settingsOptional") }}）</span>
+                        <input v-model="ragAddParts.password" type="password" :disabled="settingsBusy" autocomplete="off" />
+                      </label>
+                    </div>
+                  </template>
+                  <div class="settings-row">
+                    <label class="settings-field settings-field--tight">
+                      <span>topK</span>
+                      <input v-model.number="ragAddTopK" type="number" min="1" max="50" :disabled="settingsBusy" />
+                    </label>
+                  </div>
+                  <div class="settings-row settings-llm-actions">
+                    <button type="button" class="register-primary" :disabled="settingsBusy" @click="confirmAddRagStore">
+                      {{ t("settingsRagConfirmAdd") }}
+                    </button>
+                    <button type="button" class="settings-btn-ghost" :disabled="settingsBusy" @click="ragAddOpen = false">
+                      {{ t("cancel") }}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="settings-row settings-llm-actions">
+                  <button
+                    type="button"
+                    class="settings-btn-secondary"
+                    :disabled="settingsBusy || ragAddOpen"
+                    @click="openRagAdd"
+                  >
+                    {{ t("settingsAddRag") }}
+                  </button>
+                </div>
                 <div class="settings-pane-actions">
-                  <button type="button" class="register-primary" :disabled="settingsBusy" @click="installWebClipper">
-                    {{ t("installClipper") }}
+                  <button
+                    type="button"
+                    class="register-primary"
+                    :disabled="settingsBusy || !settingsDraft.inboxDir.trim()"
+                    @click="saveSystemSettings"
+                  >
+                    {{ t("settingsSave") }}
                   </button>
                 </div>
               </section>
 
               <section v-show="settingsTab === 'mcp'" class="settings-panel">
                 <p class="settings-lead">{{ t("settingsMcpHint") }}</p>
+                <h3 class="settings-subhead">{{ t("settingsAgentMcpTitle") }}</h3>
+                <p class="settings-lead">{{ t("settingsAgentMcpHint") }}</p>
+                <p v-if="!settingsDraft.agentMcpServers.length" class="settings-lead">{{ t("settingsMcpEmpty") }}</p>
+                <div v-for="m in settingsDraft.agentMcpServers" :key="m.id" class="settings-card">
+                  <div class="settings-row">
+                    <input
+                      v-model="m.name"
+                      type="text"
+                      :disabled="settingsBusy"
+                      :placeholder="t('settingsMcpName')"
+                    />
+                    <label class="settings-check">
+                      <input v-model="m.enabled" type="checkbox" :disabled="settingsBusy" />
+                      {{ t("settingsEnabled") }}
+                    </label>
+                    <button
+                      type="button"
+                      class="settings-btn-ghost"
+                      :disabled="settingsBusy"
+                      @click="removeAgentMcp(m.id)"
+                    >
+                      {{ t("settingsRemove") }}
+                    </button>
+                  </div>
+                  <label class="settings-field settings-field--tight">
+                    <span>{{ t("settingsMcpCommand") }}</span>
+                    <input
+                      v-model="m.command"
+                      type="text"
+                      :disabled="settingsBusy"
+                      :placeholder="t('settingsMcpCommandHint')"
+                    />
+                  </label>
+                  <label class="settings-field settings-field--tight">
+                    <span>{{ t("settingsMcpArgs") }}</span>
+                    <input
+                      :value="(m.args || []).join(' ')"
+                      type="text"
+                      :disabled="settingsBusy"
+                      :placeholder="t('settingsMcpArgsHint')"
+                      @input="
+                        m.args = ($event.target as HTMLInputElement).value
+                          .trim()
+                          .split(/\s+/)
+                          .filter(Boolean)
+                      "
+                    />
+                  </label>
+                </div>
+                <div class="settings-row settings-llm-actions">
+                  <button type="button" class="settings-btn-secondary" :disabled="settingsBusy" @click="addAgentMcp">
+                    {{ t("settingsAddMcp") }}
+                  </button>
+                </div>
+                <div class="settings-pane-actions">
+                  <button
+                    type="button"
+                    class="register-primary"
+                    :disabled="settingsBusy || !settingsDraft.inboxDir.trim()"
+                    @click="saveSystemSettings"
+                  >
+                    {{ t("settingsSave") }}
+                  </button>
+                </div>
+
+                <h3 class="settings-subhead">{{ t("settingsMcpInstallTitle") }}</h3>
                 <dl v-if="settingsView" class="settings-readonly">
                   <div>
                     <dt>{{ t("settingsMcpBin") }}</dt>
@@ -2422,6 +3262,66 @@ watch(
 
               <section v-show="settingsTab === 'skill'" class="settings-panel">
                 <p class="settings-lead">{{ t("settingsSkillHint") }}</p>
+                <h3 class="settings-subhead">{{ t("settingsAgentSkillTitle") }}</h3>
+                <p class="settings-lead">{{ t("settingsAgentSkillHint") }}</p>
+                <p v-if="!settingsDraft.agentSkills.length" class="settings-lead">{{ t("settingsSkillEmpty") }}</p>
+                <div v-for="sk in settingsDraft.agentSkills" :key="sk.id" class="settings-card">
+                  <div class="settings-row">
+                    <input
+                      v-model="sk.name"
+                      type="text"
+                      :disabled="settingsBusy"
+                      :placeholder="t('settingsSkillName')"
+                    />
+                    <select v-model="sk.source" :disabled="settingsBusy" class="settings-kind-select">
+                      <option value="builtin">builtin</option>
+                      <option value="local">local</option>
+                      <option value="remote">remote</option>
+                    </select>
+                    <label class="settings-check">
+                      <input v-model="sk.enabled" type="checkbox" :disabled="settingsBusy" />
+                      {{ t("settingsEnabled") }}
+                    </label>
+                    <button
+                      type="button"
+                      class="settings-btn-ghost"
+                      :disabled="settingsBusy"
+                      @click="removeAgentSkill(sk.id)"
+                    >
+                      {{ t("settingsRemove") }}
+                    </button>
+                  </div>
+                  <label class="settings-field settings-field--tight">
+                    <span>{{ t("settingsAgentSkillPath") }}</span>
+                    <div class="settings-row">
+                      <input v-model="sk.path" type="text" :disabled="settingsBusy" />
+                      <button type="button" :disabled="settingsBusy" @click="pickSkillPath(sk)">
+                        {{ t("settingsBrowse") }}
+                      </button>
+                    </div>
+                  </label>
+                  <label class="settings-field settings-field--tight">
+                    <span>{{ t("settingsSkillRemote") }}</span>
+                    <input v-model="sk.remoteUrl" type="text" :disabled="settingsBusy" />
+                  </label>
+                </div>
+                <div class="settings-row settings-llm-actions">
+                  <button type="button" class="settings-btn-secondary" :disabled="settingsBusy" @click="addAgentSkill">
+                    {{ t("settingsAddSkill") }}
+                  </button>
+                </div>
+                <div class="settings-pane-actions">
+                  <button
+                    type="button"
+                    class="register-primary"
+                    :disabled="settingsBusy || !settingsDraft.inboxDir.trim()"
+                    @click="saveSystemSettings"
+                  >
+                    {{ t("settingsSave") }}
+                  </button>
+                </div>
+
+                <h3 class="settings-subhead">{{ t("settingsSkillBuiltinTitle") }}</h3>
                 <dl v-if="skillView" class="settings-readonly">
                   <div>
                     <dt>{{ t("settingsSkillPath") }}</dt>
@@ -2480,10 +3380,6 @@ watch(
                   <div>
                     <dt>{{ t("settingsMcpBin") }}</dt>
                     <dd>{{ settingsView.mcpBinaryPath }}</dd>
-                  </div>
-                  <div>
-                    <dt>{{ t("settingsClipperDir") }}</dt>
-                    <dd>{{ settingsView.clipperReleaseDir }}</dd>
                   </div>
                   <div v-if="skillView">
                     <dt>{{ t("settingsSkillPath") }}</dt>
@@ -3929,6 +4825,117 @@ watch(
   color: var(--text-3);
   line-height: 1.45;
 }
+.settings-subhead {
+  margin: 16px 0 6px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-1);
+}
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  margin: 8px 0;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.settings-panel input[type="text"],
+.settings-panel input[type="password"],
+.settings-panel input[type="number"],
+.settings-panel select,
+.settings-card > input[type="text"],
+.settings-card > input[type="password"],
+.settings-card > input[type="number"],
+.settings-card > select,
+.settings-card .settings-field input,
+.settings-card .settings-field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 28px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--bg-1);
+  color: var(--text-1);
+  padding: 0 8px;
+  font: inherit;
+  color-scheme: dark;
+}
+.settings-panel input::placeholder,
+.settings-card input::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+}
+.settings-panel input:focus,
+.settings-panel select:focus,
+.settings-card input:focus,
+.settings-card select:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-2);
+}
+.settings-panel select,
+.settings-card select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+    linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 55%,
+    calc(100% - 9px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 22px;
+}
+.settings-card .settings-row > input,
+.settings-card .settings-row > select {
+  width: auto;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.settings-field--tight {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.settings-field--grow {
+  flex: 2 1 0;
+}
+.settings-test-row {
+  margin-top: 4px;
+  align-items: flex-start;
+}
+.settings-test-msg {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  word-break: break-word;
+  line-height: 1.35;
+  padding-top: 6px;
+}
+.settings-test-msg--ok {
+  color: #6ee7b7;
+}
+.settings-test-msg--err {
+  color: #fca5a5;
+}
+.color-hex {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+.settings-muted {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
 .settings-pane-actions {
   display: flex;
   gap: 8px;
@@ -3985,11 +4992,12 @@ watch(
   min-width: 0;
   height: 28px;
   border: 1px solid var(--hairline);
-  background: var(--bg-0);
+  background: var(--bg-1);
   color: var(--text-1);
   border-radius: 4px;
   padding: 0 8px;
   font: inherit;
+  color-scheme: dark;
 }
 .settings-row button {
   flex: 0 0 auto;
@@ -4004,6 +5012,61 @@ watch(
   -webkit-app-region: no-drag;
 }
 .settings-row button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.settings-llm-actions {
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+}
+.settings-btn-ghost,
+.settings-btn-secondary {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.settings-btn-ghost {
+  background: transparent !important;
+}
+.settings-btn-secondary {
+  background: var(--bg-2) !important;
+}
+.settings-btn-ghost:hover:not(:disabled),
+.settings-btn-secondary:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.settings-kind-select {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  max-width: 7.5rem;
+}
+/* Bare buttons in settings panes must not fall back to system white chrome */
+.settings-panel > button,
+.settings-card > button,
+.settings-llm-actions > button {
+  flex: 0 0 auto;
+  width: auto;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.settings-panel > button:hover:not(:disabled),
+.settings-card > button:hover:not(:disabled),
+.settings-llm-actions > button:hover:not(:disabled) {
   border-color: var(--accent);
 }
 .settings-readonly {

@@ -1,6 +1,6 @@
 [package]
 name = "monolith"
-version = "0.2.2"
+version = "0.3.1"
 description = "Monolith — local Monaco text editor"
 authors = ["muqiang"]
 edition = "2021"
@@ -27,6 +27,7 @@ url = "2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 chrono = { version = "0.4.45", features = ["clock"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+ureq = { version = "2.12", default-features = false, features = ["json", "tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

@@ -344,6 +344,15 @@ fn enrich_source(
     recorded_mtime: Option<i64>,
     recorded_size: Option<i64>,
 ) -> ConversionSourceDto {
+    enrich_source_for_output(path, recorded_mtime, recorded_size, None)
+}
+
+fn enrich_source_for_output(
+    path: String,
+    recorded_mtime: Option<i64>,
+    recorded_size: Option<i64>,
+    output_path: Option<&str>,
+) -> ConversionSourceDto {
     if crate::assets::is_http_url(&path) {
         return ConversionSourceDto {
             path,
@@ -359,7 +368,9 @@ fn enrich_source(
         Ok(id) => (true, Some(id.mtime), Some(id.size)),
         Err(_) => (false, None, None),
     };
-    let stale = exists
+    let track = crate::assets::should_track_source_stale(&path, output_path);
+    let stale = track
+        && exists
         && recorded_mtime.is_some()
         && recorded_size.is_some()
         && (current_mtime != recorded_mtime || current_size != recorded_size);
@@ -477,7 +488,12 @@ pub fn latest_success_source(
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some((path, mtime, size)) = row {
-            return Ok(Some(enrich_source(path, mtime, size)));
+            return Ok(Some(enrich_source_for_output(
+                path,
+                mtime,
+                size,
+                Some(output_path),
+            )));
         }
         let prev: Option<String> = conn
             .query_row(
@@ -1253,6 +1269,31 @@ mod tests {
             Some(id1.size),
         );
         assert!(stale.stale);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enrich_md_to_md_never_stale() {
+        let dir = std::env::temp_dir().join(format!(
+            "monolith-md-stale-{}",
+            Local::now().timestamp_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("SKILL.md");
+        let out = dir.join("copy.md");
+        fs::write(&src, b"# v1").unwrap();
+        fs::write(&out, b"# copy").unwrap();
+        let id1 = file_identity(src.to_str().unwrap()).unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        fs::write(&src, b"# v2 changed").unwrap();
+        let dto = enrich_source_for_output(
+            src.to_string_lossy().into_owned(),
+            Some(id1.mtime),
+            Some(id1.size),
+            Some(out.to_str().unwrap()),
+        );
+        assert!(dto.exists);
+        assert!(!dto.stale);
         let _ = fs::remove_dir_all(&dir);
     }
 

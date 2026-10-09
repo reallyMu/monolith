@@ -22,11 +22,19 @@ struct ToolDef {
     input_schema: Value,
 }
 
+/// Name + description for Agent system prompt / UI (no full schemas).
+pub fn tools_for_agent() -> Vec<(&'static str, &'static str)> {
+    tools()
+        .into_iter()
+        .map(|t| (t.name, t.description))
+        .collect()
+}
+
 fn tools() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "asset_list_tree",
-            description: "Global overview: browse terms (folders) + all assets. Prefer asset_list_folder when the user names a folder.",
+            description: "Global overview: browse terms (folders) + all assets. Also returns assetsDir / inboxDir from Monolith settings (use assetsDir when creating new files before asset_register). Prefer asset_list_folder when the user names a folder.",
             input_schema: json!({"type":"object","properties":{}}),
         },
         ToolDef {
@@ -259,7 +267,8 @@ fn resolve_asset(conn: &Connection, args: &Value) -> Result<AssetDto, String> {
     Err("Provide asset_id, path, or name".into())
 }
 
-fn call_tool(conn: &Connection, name: &str, args: &Value) -> Result<Value, String> {
+/// Shared by stdio MCP server and in-app Agent tool loop.
+pub(crate) fn call_tool(conn: &Connection, name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "asset_list_tree" => {
             let root = root_id(conn)?;
@@ -275,8 +284,16 @@ fn call_tool(conn: &Connection, name: &str, args: &Value) -> Result<Value, Strin
                     "path": term_display_path(conn, t.id)?,
                 }));
             }
+            let assets_dir = crate::settings::resolve_assets_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let inbox_dir = crate::settings::resolve_inbox_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
             Ok(json!({
                 "rootTermId": root,
+                "assetsDir": assets_dir,
+                "inboxDir": inbox_dir,
                 "terms": term_rows,
                 "assets": list_assets(conn)?,
             }))
@@ -430,7 +447,7 @@ fn call_tool(conn: &Connection, name: &str, args: &Value) -> Result<Value, Strin
     }
 }
 
-fn read_message(stdin: &mut impl BufRead) -> io::Result<Option<Value>> {
+pub(crate) fn read_message(stdin: &mut impl BufRead) -> io::Result<Option<Value>> {
     let mut content_length: Option<usize> = None;
     loop {
         let mut line = String::new();
@@ -460,7 +477,7 @@ fn read_message(stdin: &mut impl BufRead) -> io::Result<Option<Value>> {
     Ok(Some(v))
 }
 
-fn write_message(stdout: &mut impl Write, msg: &Value) -> io::Result<()> {
+pub(crate) fn write_message(stdout: &mut impl Write, msg: &Value) -> io::Result<()> {
     let body = serde_json::to_vec(msg)?;
     write!(stdout, "Content-Length: {}\r\n\r\n", body.len())?;
     stdout.write_all(&body)?;

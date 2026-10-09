@@ -38,3 +38,6 @@ third-party/*/.venv/
 extensions/monolith-clipper/node_modules/
 extensions/monolith-clipper/dist/
 extensions/monolith-clipper/builds/
+
+# Pi Agent runtime deps (install via scripts/pi-agent-install.sh before package)
+third-party/pi-agent/bridge/node_modules/

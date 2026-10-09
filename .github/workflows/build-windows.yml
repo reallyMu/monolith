@@ -36,6 +36,9 @@ jobs:
       - name: Install clipper deps
         run: npm --prefix extensions/monolith-clipper ci
 
+      - name: Install Pi Agent bridge deps
+        run: npm run pi-agent:install
+
       - name: Fetch downmark (Windows)
         shell: bash
         run: bash scripts/install-converters.sh
@@ -70,7 +73,8 @@ jobs:
           if ($env:GITHUB_REF.StartsWith("refs/tags/")) {
             $tag = $env:GITHUB_REF_NAME
           } else {
-            $tag = "v0.2.2"
+            $tag = (git describe --tags --abbrev=0 2>$null)
+            if (-not $tag) { throw "No tag for workflow_dispatch; push a v* tag or set tag manually" }
           }
           $null = gh release view $tag 2>$null
           if ($LASTEXITCODE -ne 0) {

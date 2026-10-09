@@ -46,6 +46,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const tree = ref<AssetTreeDto | null>(null);
 const dropKey = ref<string | null>(null);
+/** `false` = expanded; missing/`true` = collapsed (folders start collapsed). */
 const collapsed = ref<Record<number, boolean>>({});
 const searchQuery = ref("");
 const searchMode = ref<"name" | "fulltext">("name");
@@ -206,8 +207,8 @@ const rows = computed<Row[]>(() => {
     for (const term of byParent.get(parentId) ?? []) {
       if (keepTermIds && !keepTermIds.has(term.id)) continue;
       out.push({ kind: "term", term, depth, key: `term:${term.id}` });
-      // While filtering, force-expand ancestors so hits are visible.
-      if (!filtering && collapsed.value[term.id]) continue;
+      // Default collapsed; only `false` means expanded. Filtering force-shows hits.
+      if (!filtering && collapsed.value[term.id] !== false) continue;
       pushDraft(term.id, depth + 1);
       pushAssets(term.id, depth + 1);
       walk(term.id, depth + 1);
@@ -647,7 +648,8 @@ async function onPtrUp(e: PointerEvent) {
       if (d.id === targetId) return;
       await termMove(d.id, targetId);
     } else {
-      await assetMove(d.id, targetId);
+      // Change folder (not multi-mount mirror): drop from the row's source folder.
+      await assetMove(d.id, targetId, d.asset.browseTermId);
     }
     await refresh();
   } catch (err) {
@@ -709,7 +711,11 @@ function onAssetClick(asset: AssetDto) {
 }
 
 function toggle(termId: number) {
-  collapsed.value = { ...collapsed.value, [termId]: !collapsed.value[termId] };
+  // undefined/true → expand (false); false → collapse (true)
+  collapsed.value = {
+    ...collapsed.value,
+    [termId]: collapsed.value[termId] === false,
+  };
 }
 
 function isRenaming(termId: number) {
@@ -795,7 +801,7 @@ function isRenaming(termId: number) {
       >
         <template v-if="row.kind === 'term'">
           <button type="button" class="ab-twist" @click="toggle(row.term.id)">
-            {{ collapsed[row.term.id] ? "▸" : "▾" }}
+            {{ collapsed[row.term.id] !== false ? "▸" : "▾" }}
           </button>
           <div class="ab-main" @pointerdown="onTermPtrDown($event, row.term)">
             <input

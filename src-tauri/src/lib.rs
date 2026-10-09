@@ -1,9 +1,12 @@
+mod agent;
+mod agent_bridge;
 mod assets;
 mod clipper;
 mod convert;
 mod docx_altchunk;
 mod folder_import;
 mod i18n;
+mod mcp_client;
 mod mcp_install;
 pub mod mcp_server;
 mod settings;
@@ -487,6 +490,7 @@ pub fn run() {
                 let _ = (window, event);
             }
         })
+        .manage(agent_bridge::BridgeState::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_opens,
             path_is_dir,
@@ -503,6 +507,7 @@ pub fn run() {
             assets::asset_rename,
             assets::asset_relocate,
             assets::asset_find_by_path,
+            assets::asset_search_by_name,
             assets::asset_list_versions,
             assets::asset_set_current_version,
             assets::asset_save_new_version,
@@ -530,7 +535,17 @@ pub fn run() {
             mcp_install::mcp_skill_save,
             mcp_install::mcp_skill_reload,
             settings::settings_get,
-            settings::settings_save
+            settings::settings_save,
+            agent::agent_skills_load,
+            agent::agent_rag_retrieve,
+            agent::agent_rag_test,
+            agent::agent_tool_call,
+            agent::agent_mcp_tools,
+            agent::agent_runtime_status,
+            agent::agent_active_chat_llm,
+            agent_bridge::agent_bridge_status,
+            agent_bridge::agent_bridge_start,
+            agent_bridge::agent_bridge_stop
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -551,6 +566,13 @@ pub fn run() {
                 RunEvent::ExitRequested { api, code, .. } => {
                     if code.is_none() {
                         api.prevent_exit();
+                    } else if let Some(state) = app.try_state::<agent_bridge::BridgeState>() {
+                        if let Ok(mut guard) = state.child.lock() {
+                            if let Some(mut child) = guard.take() {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                        }
                     }
                 }
                 _ => {}
