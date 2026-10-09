@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import MonacoEditor, { type ScrollInfo } from "./components/MonacoEditor.vue";
@@ -1653,6 +1654,16 @@ const skillView = ref<McpSkillView | null>(null);
 const skillBusy = ref(false);
 const bridgeStatus = ref<BridgeStatus | null>(null);
 const bridgeBusy = ref(false);
+const appVersion = ref("");
+
+async function loadAppVersion() {
+  try {
+    appVersion.value = await getVersion();
+  } catch (e) {
+    appVersion.value = "";
+    statusError.value = String(e);
+  }
+}
 
 async function refreshBridgeStatus() {
   try {
@@ -1749,7 +1760,13 @@ async function openSystemSettings() {
   settingsTab.value = "dirs";
   settingsBusy.value = true;
   try {
-    await Promise.all([loadSettings(), refreshMcpAgents(), loadSkill(), refreshBridgeStatus()]);
+    await Promise.all([
+      loadSettings(),
+      refreshMcpAgents(),
+      loadSkill(),
+      refreshBridgeStatus(),
+      loadAppVersion(),
+    ]);
   } finally {
     settingsBusy.value = false;
   }
@@ -3368,6 +3385,12 @@ watch(
               </section>
 
               <section v-show="settingsTab === 'about'" class="settings-panel">
+                <dl class="settings-readonly">
+                  <div>
+                    <dt>{{ t("settingsAppVersion") }}</dt>
+                    <dd>{{ appVersion ? `Monolith ${appVersion}` : "—" }}</dd>
+                  </div>
+                </dl>
                 <dl v-if="settingsView" class="settings-readonly">
                   <div>
                     <dt>{{ t("settingsAssetsDb") }}</dt>
