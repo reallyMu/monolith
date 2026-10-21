@@ -84,17 +84,28 @@ done
 test -n "$(ls -A "$BRIDGE"/earendil-works-pi-coding-agent-*.tgz 2>/dev/null)" \
   || { echo "error: pi-coding-agent tarball missing after pack" >&2; exit 1; }
 
+# Native Windows Python cannot read Git Bash paths like /d/a/... — convert when possible.
+BRIDGE_PY="$BRIDGE"
+if command -v cygpath >/dev/null 2>&1; then
+  BRIDGE_PY="$(cygpath -m "$BRIDGE")"
+fi
 python3 - <<PY
 import json, re
 from pathlib import Path
-bridge = Path("$BRIDGE")
+bridge = Path(r"""$BRIDGE_PY""")
 overrides = {}
-for t in sorted(bridge.glob("earendil-works-*.tgz")):
+tarballs = sorted(bridge.glob("earendil-works-*.tgz"))
+if not tarballs:
+    raise SystemExit(f"no earendil-works-*.tgz under {bridge}")
+for t in tarballs:
     m = re.match(r"(earendil-works-.+)-(\d+\.\d+\.\d+(?:-[^.]*)?)\.tgz\$", t.name)
     if not m:
         raise SystemExit(f"bad tarball name {t.name}")
     scoped = "@earendil-works/" + m.group(1).removeprefix("earendil-works-")
     overrides[scoped] = f"file:{t.name}"
+coding = "@earendil-works/pi-coding-agent"
+if coding not in overrides:
+    raise SystemExit(f"missing {coding}; got {sorted(overrides)}")
 pkg = {
     "name": "monolith-pi-bridge",
     "private": True,
@@ -102,7 +113,7 @@ pkg = {
     "type": "module",
     "engines": {"node": ">=22.19.0"},
     "dependencies": {
-        "@earendil-works/pi-coding-agent": overrides["@earendil-works/pi-coding-agent"],
+        coding: overrides[coding],
     },
     "overrides": overrides,
     "piSource": {
