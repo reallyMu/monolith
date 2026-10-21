@@ -72,10 +72,17 @@ test -f "$SRC/packages/coding-agent/dist/index.js"
 
 echo "=== pack workspace packages into bridge/ ==="
 rm -f "$BRIDGE"/earendil-works-*.tgz
+# Package set drifts on pi main — skip dirs that disappeared (e.g. protocol).
 DIRS=(chord ai agent mcp tui codemode coding-agent durable env protocol telemetry)
 for d in "${DIRS[@]}"; do
+  if [[ ! -d "$SRC/packages/$d" ]]; then
+    echo "skip missing package dir: packages/$d"
+    continue
+  fi
   (cd "$SRC/packages/$d" && npm pack --pack-destination "$BRIDGE" >/dev/null)
 done
+test -n "$(ls -A "$BRIDGE"/earendil-works-pi-coding-agent-*.tgz 2>/dev/null)" \
+  || { echo "error: pi-coding-agent tarball missing after pack" >&2; exit 1; }
 
 python3 - <<PY
 import json, re
