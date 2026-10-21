@@ -3,7 +3,7 @@
  * Health + SSE prompt for the in-app Agent float.
  *
  * Env:
- *   PI_BRIDGE_PORT   (default 8096)
+ *   PI_BRIDGE_PORT   (default 8196)
  *   PI_AGENT_WORKDIR agent cwd / tools workspace
  *   PI_AGENT_DIR     agent config dir (.pi-agent equivalent)
  */
@@ -12,11 +12,18 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
 
-const PORT = Number(process.env.PI_BRIDGE_PORT || 8096);
+const PORT = Number(process.env.PI_BRIDGE_PORT || 8196);
 const WORKDIR = process.env.PI_AGENT_WORKDIR || process.cwd();
 const BRIDGE_ROOT = fileURLToPath(new URL(".", import.meta.url));
 const APP_ROOT = join(BRIDGE_ROOT, "..");
 const AGENT_DIR = process.env.PI_AGENT_DIR || join(APP_ROOT, ".pi-agent");
+
+/** WKWebView (tauri:// / http://tauri.localhost) → loopback needs CORS or fetch fails with "Load failed". */
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
 let sessionHandle = null;
 let sessionInitError = null;
@@ -68,6 +75,7 @@ function readJsonBody(req) {
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, {
+    ...CORS_HEADERS,
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
   });
@@ -114,6 +122,7 @@ async function handlePrompt(req, res) {
   }
 
   res.writeHead(200, {
+    ...CORS_HEADERS,
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
@@ -201,6 +210,12 @@ async function handlePrompt(req, res) {
 
 const server = createServer(async (req, res) => {
   const url = req.url?.split("?")[0] || "/";
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, CORS_HEADERS);
+    res.end();
+    return;
+  }
 
   if (req.method === "GET" && (url === "/health" || url === "/api/health")) {
     await handleHealth(res);

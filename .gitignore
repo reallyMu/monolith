@@ -41,3 +41,12 @@ extensions/monolith-clipper/builds/
 
 # Pi Agent runtime deps (install via scripts/pi-agent-install.sh before package)
 third-party/pi-agent/bridge/node_modules/
+third-party/pi-agent/bridge/earendil-works-*.tgz
+third-party/pi-agent/bridge/package-lock.json
+third-party/pi-agent/source/
+
+# Bundled Node binary (install via scripts/pi-node-install.sh before package)
+third-party/node/bin/
+third-party/node/LICENSE
+third-party/node/.cache/
+

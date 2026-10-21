@@ -1,9 +1,12 @@
 //! Pi Agent Bridge sidecar: materialize App Support config, sync settings, spawn Node.
 
-use crate::settings::{self, bridge_port, load_settings, AppSettings, LlmEndpoint};
+use crate::settings::{
+    self, bridge_port, load_settings, save_settings, AppSettings, LlmEndpoint, DEFAULT_BRIDGE_PORT,
+};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -15,6 +18,8 @@ const MIN_NODE_MINOR: u32 = 19;
 /// Pi models.json / settings provider id written by Monolith sync.
 const PI_PROVIDER_ID: &str = "monolith";
 const BRIDGE_HOST: &str = "127.0.0.1";
+/// How many ports to try above the preferred port when it is busy.
+const PORT_SCAN_RANGE: u16 = 50;
 
 pub struct BridgeState {
     pub child: Mutex<Option<Child>>,
@@ -39,6 +44,8 @@ pub struct BridgeStatus {
     pub node_ok: bool,
     pub node_version: Option<String>,
     pub node_error: Option<String>,
+    /// `"bundled"` | `"system"` when node is available.
+    pub node_source: Option<String>,
     pub agent_dir: String,
     pub workdir: String,
     pub bridge_script: String,
@@ -331,15 +338,50 @@ pub fn node_version_meets_min(ver: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Locate `node` via login shell PATH (macOS GUI apps often have a thin process PATH).
-fn which_node() -> Result<PathBuf, String> {
+fn node_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
+/// Bundled Node under Resources (release) or repo `third-party/node/bin` (dev).
+fn bundled_node_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let name = node_binary_name();
+    let mut out = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        out.push(res.join("third-party/node/bin").join(name));
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../third-party/node/bin");
+    if let Ok(canon) = fs::canonicalize(&dev) {
+        out.push(canon.join(name));
+    } else {
+        out.push(dev.join(name));
+    }
+    out
+}
+
+fn read_node_version(node: &Path) -> Result<String, String> {
+    let out = Command::new(node)
+        .arg("-v")
+        .output()
+        .map_err(|e| format!("node -v failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("node -v failed ({})", node.display()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Locate system `node` via login shell PATH (macOS GUI apps often have a thin process PATH).
+fn which_system_node() -> Result<PathBuf, String> {
     let out = Command::new("/bin/bash")
         .args(["-lc", "command -v node"])
         .output()
         .map_err(|e| format!("failed to locate node: {e}"))?;
     if !out.status.success() {
         return Err(
-            "Node.js not found. Install Node ≥ 22.19 (https://nodejs.org/) and restart Monolith."
+            "Bundled Node missing and system Node.js not found. Run: npm run pi-node:install"
                 .into(),
         );
     }
@@ -369,18 +411,62 @@ fn login_shell_path() -> Result<String, String> {
     Ok(path)
 }
 
-fn check_node() -> Result<(PathBuf, String), String> {
-    let node = which_node()?;
-    let out = Command::new(&node)
-        .arg("-v")
-        .output()
-        .map_err(|e| format!("node -v failed: {e}"))?;
-    if !out.status.success() {
-        return Err("node -v failed".into());
+/// Prefer bundled Node; fall back to system Node for local `tauri dev` only.
+fn check_node(app: &AppHandle) -> Result<(PathBuf, String, &'static str), String> {
+    for cand in bundled_node_candidates(app) {
+        if !cand.is_file() {
+            continue;
+        }
+        let ver = read_node_version(&cand)?;
+        node_version_meets_min(&ver)?;
+        return Ok((cand, ver, "bundled"));
     }
-    let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let node = which_system_node()?;
+    let ver = read_node_version(&node)?;
     node_version_meets_min(&ver)?;
-    Ok((node, ver))
+    Ok((node, ver, "system"))
+}
+
+/// True when nothing is listening on `127.0.0.1:port` (bind succeeds).
+pub fn port_is_free(port: u16) -> bool {
+    TcpListener::bind((BRIDGE_HOST, port)).is_ok()
+}
+
+/// Prefer `preferred` when free or already our healthy Bridge; else scan upward.
+pub fn pick_bridge_port(preferred: u16) -> Result<u16, String> {
+    let start = if preferred == 0 {
+        DEFAULT_BRIDGE_PORT
+    } else {
+        preferred
+    };
+    for i in 0..PORT_SCAN_RANGE {
+        let Some(port) = start.checked_add(i) else {
+            break;
+        };
+        if port == 0 {
+            continue;
+        }
+        if probe_health(port).is_some_and(|h| health_reports_ok(&h)) {
+            return Ok(port);
+        }
+        if port_is_free(port) {
+            return Ok(port);
+        }
+    }
+    Err(format!(
+        "No free loopback port in {start}..={}. Change Settings → Bridge preferred port.",
+        start.saturating_add(PORT_SCAN_RANGE.saturating_sub(1))
+    ))
+}
+
+fn persist_bridge_port_if_changed(preferred: u16, actual: u16) -> Result<(), String> {
+    if preferred == actual {
+        return Ok(());
+    }
+    let mut s = load_settings()?;
+    s.agent_bridge_port = actual;
+    save_settings(&s)?;
+    Ok(())
 }
 
 /// Agent cwd = configured `assetsDir` (must be absolute). Created if missing.
@@ -415,10 +501,15 @@ fn probe_health(port: u16) -> Option<Value> {
 }
 
 fn health_reports_ok(health: &Value) -> bool {
-    health
+    let ok = health
         .get("ok")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    let service = health
+        .get("service")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    ok && service == "monolith-pi-bridge"
 }
 
 fn wait_healthy(port: u16, attempts: u32) -> bool {
@@ -447,12 +538,22 @@ fn child_pid(state: &BridgeState) -> Option<u32> {
     }
 }
 
+/// Stop only our Pi Bridge Node process on `port` — never kill unrelated listeners
+/// (e.g. CDH Atlas/WebAPI historically shared 8096).
 fn kill_listeners_on_port(port: u16) {
     let _ = Command::new("/bin/bash")
         .args([
             "-lc",
             &format!(
-                "pids=$(lsof -tiTCP:{port} -sTCP:LISTEN 2>/dev/null); [ -n \"$pids\" ] && kill $pids 2>/dev/null; true"
+                r#"for pid in $(lsof -tiTCP:{port} -sTCP:LISTEN 2>/dev/null); do
+  cmd=$(ps -p "$pid" -o args= 2>/dev/null || true)
+  case "$cmd" in
+    *pi-agent/bridge/server.mjs*|*/third-party/pi-agent/bridge/server.mjs*)
+      kill "$pid" 2>/dev/null || true
+      ;;
+  esac
+done
+true"#
             ),
         ])
         .status();
@@ -481,9 +582,9 @@ pub fn agent_bridge_status(app: AppHandle, state: State<'_, BridgeState>) -> Res
         Err(e) => e,
     };
 
-    let (node_ok, node_version, node_error) = match check_node() {
-        Ok((_, v)) => (true, Some(v), None),
-        Err(e) => (false, None, Some(e)),
+    let (node_ok, node_version, node_error, node_source) = match check_node(&app) {
+        Ok((_, v, src)) => (true, Some(v), None, Some(src.to_string())),
+        Err(e) => (false, None, Some(e), None),
     };
 
     let health = probe_health(port);
@@ -507,6 +608,7 @@ pub fn agent_bridge_status(app: AppHandle, state: State<'_, BridgeState>) -> Res
         node_ok,
         node_version,
         node_error,
+        node_source,
         agent_dir,
         workdir,
         bridge_script,
@@ -521,15 +623,27 @@ pub fn agent_bridge_start(app: AppHandle, state: State<'_, BridgeState>) -> Resu
     let s = load_settings()?;
     sync_pi_config_from_settings(&s)?;
 
-    let port = bridge_port(&s);
-
-    if probe_health(port).is_some() {
-        stop_managed_child(&state)?;
-        kill_listeners_on_port(port);
-        std::thread::sleep(Duration::from_millis(300));
+    let preferred = bridge_port(&s);
+    // Stop our existing Bridge on the preferred/picked port before binding.
+    if let Ok(existing) = pick_bridge_port(preferred) {
+        if probe_health(existing).is_some_and(|h| health_reports_ok(&h)) {
+            stop_managed_child(&state)?;
+            kill_listeners_on_port(existing);
+            std::thread::sleep(Duration::from_millis(300));
+        }
     }
+    let port = pick_bridge_port(preferred)?;
+    agent_bridge_start_on_port(app, state, s, port, preferred)
+}
 
-    let (node, _) = check_node()?;
+fn agent_bridge_start_on_port(
+    app: AppHandle,
+    state: State<'_, BridgeState>,
+    s: AppSettings,
+    port: u16,
+    preferred: u16,
+) -> Result<BridgeStatus, String> {
+    let (node, _, _) = check_node(&app)?;
     let script = bridge_script(&app)?;
     if !script.is_file() {
         return Err(format!("bridge script missing: {}", script.display()));
@@ -554,7 +668,7 @@ pub fn agent_bridge_start(app: AppHandle, state: State<'_, BridgeState>) -> Resu
         .open(&log_path)
         .map_err(|e| format!("open log: {e}"))?;
     let log_err = log_file.try_clone().map_err(|e| e.to_string())?;
-    let shell_path = login_shell_path()?;
+    let shell_path = login_shell_path().unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default());
 
     {
         stop_managed_child(&state)?;
@@ -589,6 +703,7 @@ pub fn agent_bridge_start(app: AppHandle, state: State<'_, BridgeState>) -> Resu
         return Err(hint);
     }
 
+    persist_bridge_port_if_changed(preferred, port)?;
     agent_bridge_status(app, state)
 }
 
@@ -770,14 +885,16 @@ mod tests {
 
     #[test]
     fn bridge_urls() {
-        assert_eq!(bridge_base_url(8096), "http://127.0.0.1:8096");
-        assert_eq!(health_url(8096), "http://127.0.0.1:8096/health");
+        assert_eq!(bridge_base_url(8196), "http://127.0.0.1:8196");
+        assert_eq!(health_url(8196), "http://127.0.0.1:8196/health");
     }
 
     #[test]
-    fn health_reports_ok_requires_true() {
-        assert!(health_reports_ok(&json!({"ok": true})));
-        assert!(!health_reports_ok(&json!({"ok": false})));
+    fn health_reports_ok_requires_service() {
+        assert!(health_reports_ok(&json!({"ok": true, "service": "monolith-pi-bridge"})));
+        assert!(!health_reports_ok(&json!({"ok": true})));
+        assert!(!health_reports_ok(&json!({"ok": true, "service": "other"})));
+        assert!(!health_reports_ok(&json!({"ok": false, "service": "monolith-pi-bridge"})));
         assert!(!health_reports_ok(&json!({})));
     }
 
@@ -836,5 +953,25 @@ mod tests {
         assert_eq!(bridge_port(&s), settings::DEFAULT_BRIDGE_PORT);
         s.agent_bridge_port = 9099;
         assert_eq!(bridge_port(&s), 9099);
+    }
+
+    #[test]
+    fn pick_bridge_port_skips_occupied() {
+        let hold = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let occupied = hold.local_addr().unwrap().port();
+        // Prefer the occupied port; should return occupied+1 (or next free).
+        let got = pick_bridge_port(occupied).expect("pick");
+        assert_ne!(got, occupied);
+        assert!(got > occupied);
+        drop(hold);
+    }
+
+    #[test]
+    fn port_is_free_roundtrip() {
+        let hold = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let p = hold.local_addr().unwrap().port();
+        assert!(!port_is_free(p));
+        drop(hold);
+        assert!(port_is_free(p));
     }
 }

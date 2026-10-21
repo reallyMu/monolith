@@ -23,7 +23,7 @@
 - 运行期配置：`~/Library/Application Support/com.muqiang.monolith/pi-agent/`（Windows：对应 AppData）
 - 设置中的 LLM / MCP / Skill 启动前同步为 Pi `models.json` / `auth.json` / `settings.json` / `mcp.json`
 - 悬浮窗走 Bridge SSE；RAG / 资产名检索作为宿主上下文前缀
-- **不**依赖 healix-cdh；需本机 Node ≥ 22.19（设置 → LLM 可见 Bridge 状态）
+- **不**依赖 healix-cdh；正式包**内置 Node ≥ 22.19**（设置 → LLM 可见 Bridge 状态 / 首选端口；占用自动顺延）
 
 ### 设置：LLM / RAG / MCP / Skill
 

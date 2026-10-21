@@ -1061,6 +1061,17 @@ function runEditorAction(id: string) {
   editorRef.value?.trigger(id);
 }
 
+/** Monaco find needs a visible edit pane — preview-only hides it via v-show. */
+async function openFind() {
+  const tab = active.value;
+  if (!tab) return;
+  if (tab.viewMode === "preview") {
+    setViewMode(isMarkdownPath(tab.path) || previewKind(tab.path) !== "code" ? "split" : "edit");
+    await nextTick();
+  }
+  editorRef.value?.trigger("actions.find");
+}
+
 function mdBold() {
   if (useWysiwygToolbar.value) mdWysiwygRef.value?.toggleBold();
   else editorRef.value?.insertAround("**", "**", "bold");
@@ -1569,9 +1580,11 @@ const shortcutRows = computed(() => [
   { keys: "⌘U", action: t("shortcutUnsupported"), note: t("shortcutUnsupported") },
 ]);
 
-/** Skip app shortcuts in dialogs / tree search; still handle them inside Monaco / TipTap. */
+/** Skip app shortcuts in dialogs / tree search / Monaco find box; still handle them inside Monaco / TipTap body. */
 function shouldSkipAppShortcut(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
+  // Find/replace inputs live under .monaco-editor — exclude them or ⌘B/⌘K steal focus while searching.
+  if (el.closest(".find-widget, .replace-widget")) return true;
   if (el.closest(".monaco-editor, .ProseMirror")) return false;
   if (el.closest(".ab-input, .ab-search-input, .settings-modal, .register-modal, .inbox-modal")) {
     return true;
@@ -1588,6 +1601,18 @@ function onAppKeydown(e: KeyboardEvent) {
   const code = e.code;
   const shift = e.shiftKey;
   const skip = shouldSkipAppShortcut(e.target);
+  const inModal = e.target instanceof HTMLElement
+    && !!e.target.closest(".settings-modal, .register-modal, .inbox-modal, .cv-lock");
+
+  // ⌘F — Monaco body find (claim before WKWebView page-find; leave preview-only first)
+  if (code === "KeyF" && !shift) {
+    if (inModal) return;
+    if (!active.value) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    void openFind();
+    return;
+  }
 
   // ⌘K — focus asset tree search (not format; ⇧⌘K is code block below)
   if (code === "KeyK" && !shift) {
@@ -1654,6 +1679,8 @@ const skillView = ref<McpSkillView | null>(null);
 const skillBusy = ref(false);
 const bridgeStatus = ref<BridgeStatus | null>(null);
 const bridgeBusy = ref(false);
+/** Errors / in-progress only — never echo the status line. */
+const bridgeMsg = ref("");
 const appVersion = ref("");
 
 async function loadAppVersion() {
@@ -1666,22 +1693,32 @@ async function loadAppVersion() {
 }
 
 async function refreshBridgeStatus() {
+  bridgeMsg.value = "";
   try {
     bridgeStatus.value = await agentBridgeStatus();
   } catch (e) {
     bridgeStatus.value = null;
-    statusError.value = String(e);
+    bridgeMsg.value = String(e);
+    statusError.value = bridgeMsg.value;
   }
 }
 
 async function startBridgeFromSettings() {
   bridgeBusy.value = true;
+  bridgeMsg.value = t("agentBridgeStarting");
   try {
     await saveSettingsQuiet();
     bridgeStatus.value = await agentBridgeStart();
+    const st = bridgeStatus.value;
+    bridgeMsg.value = st?.up ? "" : st?.hint || t("agentBridgeDown");
   } catch (e) {
-    statusError.value = String(e);
-    await refreshBridgeStatus();
+    bridgeMsg.value = String(e);
+    statusError.value = bridgeMsg.value;
+    try {
+      bridgeStatus.value = await agentBridgeStatus();
+    } catch {
+      /* keep previous */
+    }
   } finally {
     bridgeBusy.value = false;
   }
@@ -1689,13 +1726,21 @@ async function startBridgeFromSettings() {
 
 async function stopBridgeFromSettings() {
   bridgeBusy.value = true;
+  bridgeMsg.value = t("settingsBridgeStopping");
   try {
     bridgeStatus.value = await agentBridgeStop();
+    bridgeMsg.value = "";
   } catch (e) {
-    statusError.value = String(e);
+    bridgeMsg.value = String(e);
+    statusError.value = bridgeMsg.value;
   } finally {
     bridgeBusy.value = false;
   }
+}
+
+async function toggleBridgeFromSettings() {
+  if (bridgeStatus.value?.up) await stopBridgeFromSettings();
+  else await startBridgeFromSettings();
 }
 
 /** Persist draft without closing settings (for Bridge sync before start). */
@@ -2192,7 +2237,7 @@ async function handleMenu(action: string) {
       runEditorAction("redo");
       break;
     case "edit-find":
-      runEditorAction("actions.find");
+      void openFind();
       break;
     case "view-edit":
       setViewMode("edit");
@@ -2762,24 +2807,38 @@ watch(
                 <p class="settings-lead">{{ t("settingsLlmHint") }}</p>
                 <div class="settings-card">
                   <h3 class="settings-subhead">{{ t("settingsBridgeTitle") }}</h3>
-                  <p class="settings-lead">{{ t("settingsBridgeHint") }}</p>
                   <p class="settings-lead">
-                    {{ t("settingsBridgeStatus") }}:
                     <strong>
                       {{
                         bridgeStatus?.up ? t("settingsBridgeUp") : t("settingsBridgeDown")
                       }}
                     </strong>
-                    · {{ t("settingsBridgePort") }}:
-                    {{ bridgeStatus?.port ?? settingsDraft.agentBridgePort ?? 8096 }}
-                    · {{ t("settingsBridgeNode") }}:
+                    · {{ t("settingsBridgePort") }}
+                    {{ bridgeStatus?.port ?? settingsDraft.agentBridgePort ?? 8196 }}
+                    ·
                     {{
                       bridgeStatus?.nodeOk
-                        ? bridgeStatus.nodeVersion || "ok"
-                        : bridgeStatus?.nodeError || "—"
+                        ? `${bridgeStatus.nodeVersion || "Node"}${
+                            bridgeStatus.nodeSource ? ` (${bridgeStatus.nodeSource})` : ""
+                          }`
+                        : bridgeStatus?.nodeError || t("settingsBridgeNode")
                     }}
                   </p>
-                  <p v-if="bridgeStatus?.hint" class="settings-lead">{{ bridgeStatus.hint }}</p>
+                  <label class="settings-field">
+                    <span>{{ t("settingsBridgePreferredPort") }}</span>
+                    <input
+                      v-model.number="settingsDraft.agentBridgePort"
+                      type="number"
+                      min="1024"
+                      max="65535"
+                      step="1"
+                      :disabled="settingsBusy || bridgeBusy"
+                    />
+                  </label>
+                  <p class="settings-lead">{{ t("settingsBridgePortHint") }}</p>
+                  <p v-if="bridgeStatus?.hint || bridgeMsg" class="settings-lead settings-bridge-msg--err">
+                    {{ bridgeMsg || bridgeStatus?.hint }}
+                  </p>
                   <div class="settings-row settings-llm-actions">
                     <button
                       type="button"
@@ -2793,12 +2852,15 @@ watch(
                       type="button"
                       class="register-primary"
                       :disabled="bridgeBusy || settingsBusy"
-                      @click="startBridgeFromSettings"
+                      @click="toggleBridgeFromSettings"
                     >
-                      {{ t("settingsBridgeStart") }}
-                    </button>
-                    <button type="button" :disabled="bridgeBusy || settingsBusy" @click="stopBridgeFromSettings">
-                      {{ t("settingsBridgeStop") }}
+                      {{
+                        bridgeBusy
+                          ? t("settingsBridgeBusy")
+                          : bridgeStatus?.up
+                            ? t("settingsBridgeStop")
+                            : t("settingsBridgeStart")
+                      }}
                     </button>
                   </div>
                 </div>
@@ -3655,8 +3717,8 @@ watch(
           class="tb-icon-btn"
           :title="t('find')"
           :aria-label="t('find')"
-          :disabled="!showEdit"
-          @click="runEditorAction('actions.find')"
+          :disabled="!hasTab"
+          @click="openFind"
         >
           <ToolbarIcon name="search" />
         </button>
@@ -4847,6 +4909,11 @@ watch(
   font-size: var(--text-sm);
   color: var(--text-3);
   line-height: 1.45;
+}
+.settings-bridge-msg--err {
+  color: #c45b5b;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .settings-subhead {
   margin: 16px 0 6px;

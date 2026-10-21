@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 const SETTINGS_FILE: &str = "settings.json";
 
 /// Default Pi Bridge listen port (loopback). Single source for settings + agent_bridge.
-pub const DEFAULT_BRIDGE_PORT: u16 = 8096;
+/// Kept off the Healix CDH Atlas/WebAPI port (8096) to avoid dual-stack clashes on macOS.
+pub const DEFAULT_BRIDGE_PORT: u16 = 8196;
 
 fn default_bridge_port() -> u16 {
     DEFAULT_BRIDGE_PORT

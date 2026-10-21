@@ -7,6 +7,24 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.1.0"
+    "@earendil-works/pi-coding-agent": "file:earendil-works-pi-coding-agent-1.1.0.tgz"
+  },
+  "overrides": {
+    "@earendil-works/chord": "file:earendil-works-chord-1.1.0.tgz",
+    "@earendil-works/pi-agent-core": "file:earendil-works-pi-agent-core-1.1.0.tgz",
+    "@earendil-works/pi-ai": "file:earendil-works-pi-ai-1.1.0.tgz",
+    "@earendil-works/pi-codemode": "file:earendil-works-pi-codemode-1.1.0.tgz",
+    "@earendil-works/pi-coding-agent": "file:earendil-works-pi-coding-agent-1.1.0.tgz",
+    "@earendil-works/pi-durable": "file:earendil-works-pi-durable-1.1.0.tgz",
+    "@earendil-works/pi-env": "file:earendil-works-pi-env-1.1.0.tgz",
+    "@earendil-works/pi-mcp": "file:earendil-works-pi-mcp-1.1.0.tgz",
+    "@earendil-works/pi-protocol": "file:earendil-works-pi-protocol-1.1.0.tgz",
+    "@earendil-works/pi-telemetry": "file:earendil-works-pi-telemetry-1.1.0.tgz",
+    "@earendil-works/pi-tui": "file:earendil-works-pi-tui-1.1.0.tgz"
+  },
+  "piSource": {
+    "repo": "earendil-works/pi",
+    "ref": "main",
+    "sha": "8bb180b"
   }
 }

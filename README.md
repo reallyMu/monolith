@@ -85,12 +85,12 @@ Plus special basenames such as `Dockerfile` / `Makefile`.
 
 ## Download
 
-**Release:** [v0.3.1](https://github.com/reallyMu/monolith/releases/tag/v0.3.1) — [release notes](docs/RELEASE-NOTES-v0.3.1.md)
+**Release:** [v0.3.4](https://github.com/reallyMu/monolith/releases/tag/v0.3.4) — [release notes](docs/RELEASE-NOTES-v0.3.4.md)
 
 | Platform | Asset | Notes |
 |---|---|---|
-| **macOS** (Apple Silicon) | `Monolith_0.3.1_aarch64.dmg` | Ad-hoc signed (not notarized). First open: **Privacy & Security → Open Anyway**. Bundled Pi Agent needs system **Node ≥ 22.19**. |
-| **Windows** (x64) | `Monolith_0.3.1_x64-setup.exe` (NSIS) | Built by GitHub Actions. Requires [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually preinstalled on Windows 10/11). Pi Agent needs system **Node ≥ 22.19**. |
+| **macOS** (Apple Silicon) | `Monolith_0.3.4_aarch64.dmg` | Ad-hoc signed (not notarized). First open: **Privacy & Security → Open Anyway**. Bundled Node for Pi Agent (no system Node required). |
+| **Windows** (x64) | `Monolith_0.3.4_x64-setup.exe` (NSIS) | Built by GitHub Actions. Requires [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually preinstalled on Windows 10/11). Bundled Node for Pi Agent. |
 
 Windows installers are produced by [.github/workflows/build-windows.yml](.github/workflows/build-windows.yml) (`workflow_dispatch` or `v*` tags).
 

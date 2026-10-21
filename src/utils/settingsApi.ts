@@ -74,7 +74,7 @@ export function emptySettings(): AppSettings {
     ragStores: [],
     agentMcpServers: [],
     agentSkills: [],
-    agentBridgePort: 8096,
+    agentBridgePort: 8196,
   };
 }
 

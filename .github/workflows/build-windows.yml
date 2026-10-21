@@ -39,6 +39,10 @@ jobs:
       - name: Install Pi Agent bridge deps
         run: npm run pi-agent:install
 
+      - name: Install bundled Node runtime
+        shell: bash
+        run: MONOLITH_NODE_TRIPLE=win-x64 npm run pi-node:install
+
       - name: Fetch downmark (Windows)
         shell: bash
         run: bash scripts/install-converters.sh

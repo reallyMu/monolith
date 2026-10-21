@@ -1,14 +1,16 @@
 {
   "name": "monolith",
   "private": false,
-  "version": "0.3.1",
+  "version": "0.3.4",
   "type": "module",
   "scripts": {
     "sync:file-associations": "node scripts/sync-file-associations.mjs",
     "build:clipper": "npm --prefix extensions/monolith-clipper run build:chrome && rm -rf src-tauri/resources/clipper-extension && cp -R extensions/monolith-clipper/dist src-tauri/resources/clipper-extension",
     "pi-agent:install": "bash scripts/pi-agent-install.sh",
+    "pi-node:install": "bash scripts/pi-node-install.sh",
+    "converters:install": "bash scripts/install-converters.sh",
     "dev": "npm run sync:file-associations && vite",
-    "build": "npm run pi-agent:install && npm run sync:file-associations && npm run build:clipper && vue-tsc --noEmit && vite build",
+    "build": "npm run pi-agent:install && npm run pi-node:install && npm run sync:file-associations && npm run build:clipper && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:asset-search": "node --experimental-strip-types scripts/test-asset-search.mjs",
     "test:md-math-mermaid": "node --experimental-strip-types scripts/test-md-math-mermaid.mjs",

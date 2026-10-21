@@ -45,6 +45,8 @@ export interface BridgeStatus {
   nodeOk: boolean;
   nodeVersion?: string | null;
   nodeError?: string | null;
+  /** `"bundled"` | `"system"` when Node is available. */
+  nodeSource?: string | null;
   agentDir: string;
   workdir: string;
   bridgeScript: string;
